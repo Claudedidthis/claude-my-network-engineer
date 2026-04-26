@@ -71,3 +71,7 @@ ios_app/DerivedData/
 
 # Claude Code local overrides (project policy lives in .claude/settings.json which IS tracked)
 .claude/settings.local.json
+
+# Leak detector — operator's private blocklist (never committed)
+.git-leak-blocklist
+.git/leak_overrides.log

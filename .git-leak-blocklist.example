@@ -1,0 +1,60 @@
+# .git-leak-blocklist  —  per-fork operator leak-detection blocklist.
+#
+# Copy this file to .git-leak-blocklist (gitignored, NOT committed) and
+# populate with the strings that uniquely identify YOUR network and YOUR
+# household. The leak detector (tools/leak_detector.py, Layer E) does a
+# case-insensitive substring match for each literal entry and a regex
+# match for each line prefixed with `re:`.
+#
+# What to put here
+# ----------------
+#   - your real first/last name and any common spellings or initials
+#   - your street name (full and partial — "Wagon Wheel" not just "23 Wagon
+#     Wheel" — because partial matches are still identifying)
+#   - other household members' first names if they appear in device labels
+#   - pet names if they appear in device labels (Lutron labels, etc.)
+#   - your real domain names (the public ones you own)
+#   - any third-party-installer business names tied to your address
+#   - real device labels you've used in your UniFi controller that are
+#     unusual enough to be identifying ("23 Wagon Wheel Doorbell Cam")
+#   - the OUI prefixes of devices you actually own when paired with
+#     non-zeroed suffixes (regex form: `re:^60:64:05:[^0]`)
+#   - real network MAC addresses you've seen in your snapshots
+#
+# What NOT to put here
+# --------------------
+#   - generic words ("camera", "doorbell") — those produce too many false
+#     positives in legitimate code/tests
+#   - public-knowledge things (your city, your ISP) — not a leak per se
+#
+# Examples (replace with YOUR real values, then the file becomes private)
+# -----------------------------------------------------------------------
+#
+# Real names + identifiers
+# YourFirstName
+# YourLastName
+# yourusername
+#
+# Partial street name
+# Wagon Wheel
+#
+# Household member names that appear in device labels
+# Lily
+# Sarah
+#
+# Real domains
+# according-to-plan.com
+# yourcompany.io
+#
+# Real device labels from your UniFi controller
+# 23 Wagon Wheel Doorbell Cam
+# Master Bedroom AP
+#
+# Real MACs (full literal, lowercase preferred)
+# 60:64:05:6c:89:5a
+# ec:b5:fa:33:98:f1
+# b0:b9:8a:44:da:2c
+#
+# Regex patterns for OUI + non-zeroed-suffix combinations
+# re:^60:64:05:(?!00:00:)
+# re:^ec:b5:fa:(?!00:00:)

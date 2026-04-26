@@ -1,0 +1,84 @@
+# .git-leak-allowlist  —  intentional content the leak detector ignores.
+#
+# Format: one entry per line, either
+#   <file_glob>:<rule_id>
+#   <file_glob>:<rule_id>:<line_no>
+#   <file_glob>:*           (allow all rules for matching files)
+#
+# Rule IDs come from leak_detector.py — see _scan_text() and _shadow_pair_check().
+#   A.users_path             /Users/<user>/ paths
+#   A.home_tilde             ~user/ paths
+#   B.shadow_pair            example template's non-example file is tracked
+#   C.mac_non_synthetic      MAC outside the synthetic-suffix convention
+#   C.ipv4_public            public IPv4
+#   C.ipv6_public            public IPv6
+#   D.secret.<label>         specific secret pattern
+#   D.env_assign_high_entropy  KEY=high-entropy-value
+#   E.blocklist_literal      operator-blocklist literal hit
+#   E.blocklist_regex        operator-blocklist regex hit
+#
+# Common legitimate exceptions
+# ----------------------------
+
+# tests/test_example_macs.py deliberately contains non-synthetic MACs as
+# inputs to the rejector — they are not leaks, they ARE the rejector's
+# negative test cases. The MACs themselves are fabricated (OUI + 42:7a:18
+# suffix), not real network hardware.
+tests/test_example_macs.py:C.mac_non_synthetic
+
+# tests/test_authorization.py uses synthetic-looking but non-zeroed MACs
+# in canonical-payload-hash tests where the value is opaque to the test.
+# (Currently no entries here; add as needed.)
+
+# OUI vendor database in src/network_engineer/data/oui.csv may contain
+# OUI prefixes that the regex would interpret as MAC starts. Allowlist
+# the whole file.
+src/network_engineer/data/oui.csv:*
+
+# README and docs reference example.com / 192.0.2.x / 198.51.100.x /
+# 203.0.113.x (RFC 5737 documentation ranges) in command-line examples.
+# These are caught by C.ipv4_public's exemption already, but adding here
+# documents the intent.
+
+# Compliance docs reference commit SHAs that are 40-char hex; the JWT
+# regex sometimes false-positives on these. Allow shadow checks pass.
+docs/review_compliance/*.md:D.secret.jwt
+
+# tests/test_ssl_policy.py deliberately uses public IPs (8.8.8.8, 1.1.1.1,
+# 52.0.0.1) as negative test cases — they verify the LAN_ONLY policy
+# refuses public addresses. The IPs themselves are well-known
+# generic-purpose addresses, not operator infrastructure.
+tests/test_ssl_policy.py:C.ipv4_public
+
+# tests/test_auditor.py uses 1.2.3.4 as a fixture for an audit finding —
+# canonical "obviously fake public IP" placeholder. Document-only.
+tests/test_auditor.py:C.ipv4_public
+
+# tests/test_leak_detector.py deliberately exercises the detector's
+# rejector with real-looking inputs (real-Lutron MAC, public IPs,
+# AKIA-prefixed strings). All values are fabricated for the test.
+tests/test_leak_detector.py:*
+
+# Existing fixture MACs in test files use the canonical aa:bb:cc:dd:ee:NN
+# demo-space pattern, which the synthetic-MAC classifier now recognizes
+# directly. These allowlists are kept for safety in case a non-canonical
+# placeholder slips in (and to suppress noise on the few aa:00:00:00:00:NN
+# variants that legitimately fall through other rules).
+tests/test_auditor.py:C.mac_non_synthetic
+tests/test_optimizer.py:C.mac_non_synthetic
+tests/test_unifi_client.py:C.mac_non_synthetic
+tests/test_authorization.py:C.mac_non_synthetic
+tests/test_security_agent.py:C.mac_non_synthetic
+tests/test_envelope.py:C.mac_non_synthetic
+tests/test_registry.py:C.mac_non_synthetic
+tests/test_dismissals.py:C.mac_non_synthetic
+tests/test_monitor.py:C.mac_non_synthetic
+tests/test_reporter.py:C.mac_non_synthetic
+tests/test_upgrade_agent.py:C.mac_non_synthetic
+tests/test_smoke.py:C.mac_non_synthetic
+tests/test_probes.py:C.mac_non_synthetic
+tests/test_ai_runtime.py:C.mac_non_synthetic
+tests/test_security_agent.py:C.ipv4_public
+tests/test_optimizer.py:C.ipv4_public
+tests/test_unifi_client.py:C.ipv4_public
+tests/test_auditor.py:C.mac_non_synthetic

@@ -1,0 +1,39 @@
+name: Leak Gate
+
+# Runs the leak detector on every push and pull request. Belt-and-suspenders
+# for the local pre-push hook (which an operator could disable or bypass on
+# their workstation). CI cannot be bypassed by setting GIT_LEAK_OVERRIDE.
+#
+# A non-empty findings list fails the workflow.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+
+jobs:
+  leak-detector:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need the full history of the PR so the gate can scan every
+          # commit — not just the merge result.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Run leak detector against full tracked tree
+        # CI cannot accept GIT_LEAK_OVERRIDE — explicitly unset.
+        env:
+          GIT_LEAK_OVERRIDE: ""
+        run: |
+          python -m network_engineer.tools.leak_detector_cli --all
