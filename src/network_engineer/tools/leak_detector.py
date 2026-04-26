@@ -34,9 +34,10 @@ The five layers
        A gitignored .git-leak-blocklist file containing literal substrings
        and regex patterns specific to THIS operator: real name, family
        names, street name, pet names, real device labels, real SSIDs,
-       real domains, real network MACs. A generic rule cannot know
-       "Wagon Wheel" is sensitive in this repo and irrelevant in another;
-       the blocklist is what closes that gap.
+       real domains, real network MACs. A generic rule cannot know that
+       a particular street name or family member's first name is
+       sensitive in this repo and irrelevant in another; the operator's
+       private blocklist is what closes that gap.
 
 Allowlisting
 ------------

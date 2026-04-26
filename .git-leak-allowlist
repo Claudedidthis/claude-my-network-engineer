@@ -93,3 +93,11 @@ tests/test_auditor.py:C.mac_non_synthetic
 # the patterns themselves (e.g. ~user/ as an example of A.home_tilde).
 # The documentation needs to show the patterns it discusses.
 docs/leak_detector.md:*
+
+# LICENSE and pyproject.toml carry the author's legal name as standard
+# open-source attribution. The MIT license requires preserving the
+# copyright notice; pyproject's authors field is package metadata that
+# downstream consumers (PyPI, package managers) read. Both uses are
+# intentional and review-visible.
+LICENSE:E.blocklist_literal
+pyproject.toml:E.blocklist_literal

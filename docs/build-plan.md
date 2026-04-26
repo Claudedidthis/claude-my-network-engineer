@@ -1,7 +1,6 @@
 # ClaudeMyNetworkEngineer — Build Plan
 
 **Status:** Pre-Phase 0 (prep complete, build not yet started)
-**Owner:** David Vickers
 **Last updated:** 2026-04-24
 
 This is the working document for how we build the system described in `ClaudeMyNetworkEngineer_ProjectBrief.md`. It supplements the brief — the brief is the *what* and *why*, this is the *how* and *in what order*.
@@ -83,7 +82,7 @@ A clean, version-controlled, OSS-ready scaffold where committing a credential is
 
 1. `git init` in the project root.
 2. Write `.gitignore`: `.env`, `.env.local`, `logs/`, `snapshots/`, `__pycache__/`, `*.pyc`, `.venv/`, `dist/`, `build/`, `*.egg-info/`, `ios_app/build/`, `ios_app/DerivedData/`, `*.xcuserstate`, `config/network_profile.json` (the real one — example version stays tracked).
-3. Write `LICENSE` — MIT, with David Vickers as copyright holder (OSS-friendly, most adoptable).
+3. Write `LICENSE` — MIT, with the author as copyright holder (OSS-friendly, most adoptable).
 4. Write `pyproject.toml` with `[project.optional-dependencies]`:
    - `core`: `unifi-sm-api`, `httpx`, `python-dotenv`, `pyyaml`, `pydantic>=2`, `rich`, `tenacity`
    - `ai`: `anthropic`
