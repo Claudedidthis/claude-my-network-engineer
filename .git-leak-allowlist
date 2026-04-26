@@ -82,3 +82,14 @@ tests/test_security_agent.py:C.ipv4_public
 tests/test_optimizer.py:C.ipv4_public
 tests/test_unifi_client.py:C.ipv4_public
 tests/test_auditor.py:C.mac_non_synthetic
+
+# .git-leak-blocklist.example is the operator-blocklist *template*. By
+# definition it contains example values that look like real operator
+# data — that's the point. The real .git-leak-blocklist is gitignored;
+# only the .example file ships, and it's allowed to look identifying.
+.git-leak-blocklist.example:*
+
+# docs/leak_detector.md explains what the detector looks for, including
+# the patterns themselves (e.g. ~user/ as an example of A.home_tilde).
+# The documentation needs to show the patterns it discusses.
+docs/leak_detector.md:*
