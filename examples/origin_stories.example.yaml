@@ -1,0 +1,25 @@
+# Origin stories — per-artifact rationale for existing config.
+#
+# Captured during the heritage walkthrough of `nye onboard`, or hand-edited.
+# Each entry tells the agents *why* a config artifact exists and whether it
+# should be preserved as-is. The auditor + security agent consult this before
+# flagging anything that looks unusual.
+
+origin_stories:
+  - subject_kind: network
+    subject_key: DMZ
+    rationale: "Created when solar installer needed their Zigbee gateway to phone home — isolated from main LAN."
+    do_not_touch: true
+    created_by: operator
+
+  - subject_kind: port_forward
+    subject_key: "Plex remote access"
+    rationale: "Plex media server uplink for family members traveling. Restricted at the application layer to authenticated users."
+    do_not_touch: false   # operator OK with refining (e.g. switching to Tailscale)
+    created_by: operator
+
+  - subject_kind: firewall_rule
+    subject_key: "Block IoT VLAN to LAN"
+    rationale: "Default-deny rule from initial VLAN setup. Do not touch."
+    do_not_touch: true
+    created_by: operator

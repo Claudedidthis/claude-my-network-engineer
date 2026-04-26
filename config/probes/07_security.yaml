@@ -1,0 +1,126 @@
+# Security philosophy probes — how aggressive vs conservative the VLAN
+# architecture and isolation rules should be. Operator philosophy varies wildly
+# here; meeting them where they are matters more than imposing a "best practice".
+
+probes:
+  - id: security.iot_isolation_appetite
+    theme: security
+    prompt: |
+      How do you feel about IoT devices on your main network?
+      Choices:
+        none = "I trust them, leave them with my laptop"
+        light = "isolate the worst offenders, leave the rest"
+        strict = "everything not a laptop/phone goes on its own VLAN"
+        paranoid = "strict + outbound DPI + DNS filtering + the works"
+    kind: choice
+    field_path: security.iot_isolation_appetite
+    choices: [none, light, strict, paranoid]
+    priority: 7
+    surfaces_concern: vlan_design
+
+  - id: security.third_party_devices_present
+    theme: security
+    prompt: |
+      Are there devices on your network that someone *else* installed —
+      and that they monitor or control?
+      Common examples: solar installer's gateway, alarm-monitoring system,
+      HVAC remote-diagnostics box, ISP-provided gear, landlord-installed
+      smart thermostat, in-home medical monitor.
+      (yes / no / unsure)
+    kind: choice
+    field_path: security.third_party_devices_present
+    choices: [yes, no, unsure]
+    priority: 8
+    surfaces_concern: third_party_isolation
+    follow_ups:
+      - when: yes
+        ids: [security.third_party_devices_description]
+
+  - id: security.third_party_devices_description
+    theme: security
+    prompt: |
+      Briefly describe each third-party device:
+      who installed it, what it does, does it need internet, does it need
+      to talk to anything else on your network. (free text, one or two
+      sentences)
+    kind: free_text
+    field_path: security.third_party_devices_description
+    priority: 6
+    surfaces_concern: third_party_isolation
+    triggers_when:
+      security.third_party_devices_present: yes
+
+  - id: security.vpn_usage
+    theme: security
+    prompt: |
+      How do you (or want to) use VPNs on this network?
+      (privacy / remote_in / remote_out / none — comma-separated)
+        privacy = exit-VPN to anonymize browsing (Mullvad, Proton)
+        remote_in = VPN into your home from outside (WireGuard server)
+        remote_out = work VPN out to corporate
+    kind: choice_multi
+    field_path: security.vpn_usage
+    choices: [privacy, remote_in, remote_out, none]
+    priority: 5
+    surfaces_concern: vpn_planning
+
+  - id: security.iot_phone_home_concern
+    theme: security
+    prompt: |
+      How concerned are you about IoT devices phoning home (sending data
+      back to manufacturers)?
+      (none / mild / high)
+    kind: choice
+    field_path: security.iot_phone_home_concern
+    choices: [none, mild, high]
+    priority: 4
+    surfaces_concern: dns_filtering
+
+  - id: security.dns_filtering_interest
+    theme: security
+    prompt: |
+      Interested in DNS filtering — Pi-hole or similar to block ads and
+      tracking at the network level? (yes/no/maybe)
+    kind: choice
+    field_path: security.dns_filtering_interest
+    choices: [yes, no, maybe]
+    priority: 3
+    surfaces_concern: dns_filtering
+
+  - id: security.content_filter_for_kids
+    theme: security
+    prompt: |
+      Want content filtering for the kids — at the network level so it
+      works on every device they use?
+    kind: boolean
+    field_path: security.content_filter_for_kids
+    priority: 4
+    surfaces_concern: parental_controls
+    triggers_when:
+      household.has_kids: true
+
+  - id: security.has_been_compromised_before
+    theme: security
+    prompt: |
+      Has anything bad happened on your network before — a device got
+      hacked, ransomware, weird traffic that scared you? (yes/no — if
+      yes, the next probe will ask for details)
+    kind: boolean
+    field_path: security.has_been_compromised_before
+    priority: 5
+    surfaces_concern: framing
+    follow_ups:
+      - when: true
+        ids: [security.breach_description]
+
+  - id: security.breach_description
+    theme: security
+    prompt: |
+      Briefly — what happened? (helps the agents understand which
+      attack surface you care most about)
+    kind: free_text
+    field_path: security.breach_disclosure
+    priority: 4
+    surfaces_concern: framing
+    triggers_when:
+      security.has_been_compromised_before: true

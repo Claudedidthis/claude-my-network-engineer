@@ -1,0 +1,120 @@
+# Curated OUI (MAC prefix) → manufacturer mapping for common home-network devices.
+# Format: 6-hex-char OUI (no colons, lowercase) → vendor name.
+# Used by tools/registry.py to identify unknown MACs during the walkthrough.
+#
+# Not exhaustive — falls back to "Unknown manufacturer" for misses. Add entries
+# as you encounter new devices on the live LAN.
+
+# Apple
+"3c0754": "Apple"
+"a4d18c": "Apple"
+"f86fc1": "Apple"
+"507a55": "Apple"
+"6c4008": "Apple"
+"8866a5": "Apple"
+"e0acf1": "Apple"
+"d04edd": "Apple"
+"40b395": "Apple"
+
+# Ubiquiti (UniFi gear, cameras, gateways)
+"002722": "Ubiquiti"
+"04181b": "Ubiquiti"
+"24a43c": "Ubiquiti"
+"442a60": "Ubiquiti"
+"68d79a": "Ubiquiti"
+"74acb9": "Ubiquiti"
+"784558": "Ubiquiti"
+"802aa8": "Ubiquiti"
+"94a673": "Ubiquiti"
+"b4fbe4": "Ubiquiti"
+"d021f9": "Ubiquiti"
+"dc9fdb": "Ubiquiti"
+"e063da": "Ubiquiti"
+"f09fc2": "Ubiquiti"
+"fcecda": "Ubiquiti"
+"18e829": "Ubiquiti"
+
+# Amazon (Echo, Ring, eero, Fire TV)
+"4c17eb": "Amazon"
+"68372c": "Amazon"
+"747548": "Amazon"
+"84d6d0": "Amazon"
+"a002dc": "Amazon"
+"f0d2f1": "Amazon"
+"50dc4f": "Amazon"
+"98e7f5": "Amazon"
+"4c1744": "Amazon"
+"bcd445": "Amazon"
+
+# Google (Nest, Chromecast, Home, Pixel)
+"3c5ab4": "Google"
+"4886e8": "Google"
+"6cad3f": "Google"
+"f4f5d8": "Google"
+"f4f5e8": "Google"
+"a4778b": "Google"
+"f8f005": "Google"
+"4cb16c": "Google"
+
+# Philips Hue
+"00177a": "Philips Hue"
+"ecb5fa": "Philips Hue"
+
+# Lutron
+"606405": "Lutron"
+"002615": "Lutron"
+
+# Crestron
+"000731": "Crestron"
+"f80594": "Crestron"
+
+# Sonos
+"00edab": "Sonos"
+"000e58": "Sonos"
+"5cae46": "Sonos"
+"94c612": "Sonos"
+"b8e937": "Sonos"
+
+# Microsoft (Xbox, Surface)
+"30d701": "Microsoft Xbox"
+"e4f04c": "Microsoft"
+
+# Sony / PlayStation
+"08bd43": "Sony"
+"00041f": "Sony"
+
+# Samsung
+"002566": "Samsung"
+"084e0c": "Samsung"
+"d022be": "Samsung"
+
+# LG
+"0019d2": "LG"
+"344df7": "LG"
+
+# Roku
+"d050ed": "Roku"
+"b0a737": "Roku"
+
+# TP-Link / Kasa
+"5091e3": "TP-Link / Kasa"
+"506cb1": "TP-Link"
+"a4cf12": "TP-Link"
+
+# Xerox
+"08001f": "Xerox"
+"0000aa": "Xerox"
+"00001b": "Xerox"
+
+# Raspberry Pi Foundation
+"b827eb": "Raspberry Pi"
+"dca632": "Raspberry Pi"
+"e45f01": "Raspberry Pi"
+
+# Marantz / Denon (D&M Holdings)
+"0005cd": "Marantz/Denon"
+"0006781": "Marantz/Denon"
+
+# Nest Labs (pre-Google acquisition)
+"18b430": "Nest Labs"
+"64166d": "Nest Labs"

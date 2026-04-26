@@ -1,0 +1,159 @@
+# Building probes — the building usually decides the network shape before the
+# human does. Construction era is the highest-leverage single field: pre-1950
+# plaster-and-lath houses are essentially Faraday cages and need many APs;
+# 2010+ wood-frame houses can often be covered by two.
+
+probes:
+  - id: building.home_type
+    theme: building
+    prompt: |
+      What kind of place is it?
+      (house / apartment / condo / townhouse / converted-other / RV)
+    kind: choice
+    field_path: building.home_type
+    choices: [house, apartment, condo, townhouse, converted, rv]
+    priority: 8
+    surfaces_concern: rf_planning
+    follow_ups:
+      - when: apartment
+        ids: [building.rental, building.partner_tolerance_holes]
+
+  - id: building.construction_era
+    theme: building
+    prompt: |
+      Roughly when was the building built? Construction era is the single
+      biggest predictor of how WiFi will behave in the walls.
+      Choices: pre-1950, 1950-1980, 1980-2000, 2000-2010, post-2010, unknown
+    kind: choice
+    field_path: building.construction_era
+    choices: ["pre_1950", "1950_1980", "1980_2000", "2000_2010", "post_2010", "unknown"]
+    priority: 9
+    surfaces_concern: rf_planning
+    follow_ups:
+      - when: { in: ["pre_1950", "1950_1980"] }
+        ids: [building.construction_material]
+    notes: |
+      Pre-1950 commonly = metal-lath plaster (Faraday cage). 1950-1980 often
+      has solid plaster but no lath. 1980-2000 mostly drywall. Post-2000
+      drywall + open plans = WiFi easy mode.
+
+  - id: building.construction_material
+    theme: building
+    prompt: |
+      What are the walls actually made of? This is RF planning gold.
+      (drywall, plaster, brick, concrete, metal-lath, mixed — comma-separate)
+    kind: choice_multi
+    field_path: building.construction_material
+    choices: [drywall, plaster, brick, concrete, metal_lath, log, mixed]
+    priority: 7
+    surfaces_concern: rf_planning
+
+  - id: building.num_floors
+    theme: building
+    prompt: How many floors does the network need to cover (including basement and attic if relevant)?
+    kind: integer
+    field_path: building.num_floors
+    priority: 7
+    surfaces_concern: rf_planning
+
+  - id: building.square_footage
+    theme: building
+    prompt: |
+      Roughly how many square feet of living area need WiFi?
+      (Rough estimate — within 500 is fine.)
+    kind: integer
+    field_path: building.square_footage
+    priority: 6
+    surfaces_concern: rf_planning
+
+  - id: building.floor_plan
+    theme: building
+    prompt: |
+      Is the layout open-plan (few interior walls), traditional (lots of
+      separate rooms), or mixed?
+    kind: choice
+    field_path: building.floor_plan
+    choices: [open, traditional, mixed]
+    priority: 5
+    surfaces_concern: rf_planning
+
+  - id: building.has_basement
+    theme: building
+    prompt: Is there a basement (finished or unfinished)?
+    kind: boolean
+    field_path: building.has_basement
+    priority: 5
+    surfaces_concern: cable_planning
+
+  - id: building.has_attic
+    theme: building
+    prompt: Is there an attic — and is it accessible enough to run cable through?
+    kind: choice
+    field_path: building.attic_accessible_for_cable
+    choices: [yes, no, "yes but I won't be the one doing it"]
+    priority: 4
+    surfaces_concern: cable_planning
+
+  - id: building.outbuildings
+    theme: building
+    prompt: |
+      Any outbuildings that need network coverage — shed, workshop, ADU,
+      pool house, detached garage?
+      (List them comma-separated, or "none")
+    kind: choice_multi
+    field_path: building.outbuildings
+    choices: [shed, workshop, adu, pool_house, detached_garage, none]
+    priority: 4
+    surfaces_concern: outdoor_coverage
+
+  - id: building.existing_cable
+    theme: building
+    prompt: |
+      What cable runs already exist in the walls or attic?
+      (ethernet, coax, phone, fiber, none — comma-separated)
+    kind: choice_multi
+    field_path: building.existing_cable
+    choices: [ethernet, coax, phone, fiber, none]
+    priority: 6
+    surfaces_concern: cable_planning
+
+  - id: building.can_run_new_cable
+    theme: building
+    prompt: |
+      Are you willing/able to run new ethernet runs?
+      Choices: yes-DIY / yes-hire / no / unsure
+    kind: choice
+    field_path: building.can_run_new_cable
+    choices: [yes_diy, yes_hire, no, unsure]
+    priority: 6
+    surfaces_concern: cable_planning
+
+  - id: building.rental
+    theme: building
+    prompt: Is it a rental? (affects what holes you can put in walls)
+    kind: boolean
+    field_path: building.rental
+    priority: 5
+    surfaces_concern: cable_planning
+
+  - id: building.isp_entry_location
+    theme: building
+    prompt: |
+      Where does the ISP cable/fiber actually enter the building?
+      (e.g. "basement utility room", "back of garage", "wall near front door")
+    kind: free_text
+    field_path: building.isp_entry_location
+    priority: 5
+    surfaces_concern: cable_planning
+
+  - id: building.partner_tolerance_holes
+    theme: building
+    prompt: |
+      What's your partner/co-resident's tolerance for visible network gear
+      and holes in walls? (high / medium / low / not applicable)
+    kind: choice
+    field_path: building.partner_tolerance_holes
+    choices: [high, medium, low, n/a]
+    priority: 3
+    surfaces_concern: aesthetics
+    notes: This question has saved more home-network projects than any RF planner.

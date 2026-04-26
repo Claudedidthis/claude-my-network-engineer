@@ -1,0 +1,118 @@
+# Work probes — WAN priority, VPN handling, conferencing reliability.
+
+probes:
+  - id: work.work_from_home
+    theme: work
+    prompt: |
+      Does anyone work from home, and how often?
+      Choices:
+        none = nobody works from home
+        occasional = once a week or less
+        daily = several days a week / fully remote
+        heavy_meetings = daily WFH with lots of video calls
+    kind: choice
+    field_path: work.work_from_home
+    choices: [none, occasional, daily, heavy_meetings]
+    priority: 8
+    surfaces_concern: conferencing_priority
+    follow_ups:
+      - when: { in: [daily, heavy_meetings] }
+        ids: [work.multiple_wfh_simultaneous, work.work_types,
+              work.corporate_vpn, work.conferencing_quality_critical]
+
+  - id: work.multiple_wfh_simultaneous
+    theme: work
+    prompt: |
+      Are multiple people on video calls at the same time, regularly?
+      (changes upload-bandwidth requirements significantly)
+    kind: boolean
+    field_path: work.multiple_wfh_simultaneous
+    priority: 6
+    surfaces_concern: conferencing_priority
+    triggers_when:
+      work.work_from_home: ["daily", "heavy_meetings"]
+
+  - id: work.work_types
+    theme: work
+    prompt: |
+      What kind of work? (multiple is fine, comma-separated)
+        video_calls = lots of Zoom/Teams/Meet
+        vdi = remote desktop into a corporate environment
+        email = lightweight, mostly browser
+        dev = software development, possibly with cloud build/test
+        creative = video editing uploads, large file transfers
+    kind: choice_multi
+    field_path: work.work_types
+    choices: [video_calls, vdi, email, dev, creative]
+    priority: 6
+    surfaces_concern: conferencing_priority
+
+  - id: work.corporate_vpn
+    theme: work
+    prompt: |
+      Does work require a corporate VPN? (yes/no/sometimes)
+    kind: choice
+    field_path: work.corporate_vpn
+    choices: [yes, no, sometimes]
+    priority: 5
+    surfaces_concern: vpn_planning
+    follow_ups:
+      - when: yes
+        ids: [work.corporate_vpn_split_tunnel, work.managed_corporate_devices]
+
+  - id: work.corporate_vpn_split_tunnel
+    theme: work
+    prompt: |
+      Does the corporate VPN split-tunnel (only work traffic goes through
+      it), or full-tunnel (all traffic goes through it)?
+      (split / full / unsure)
+    kind: choice
+    field_path: work.corporate_vpn_split_tunnel
+    choices: [split, full, unsure]
+    priority: 4
+    surfaces_concern: vpn_planning
+    triggers_when:
+      work.corporate_vpn: yes
+    notes: |
+      Full-tunnel VPNs hide the work device from local-network discovery
+      services (printers, AirPlay) which surprises operators. Worth knowing.
+
+  - id: work.managed_corporate_devices
+    theme: work
+    prompt: |
+      Are work devices corporate-managed (MDM, can't change network
+      settings, may have opinions about your wifi security)?
+    kind: boolean
+    field_path: work.managed_corporate_devices
+    priority: 4
+    surfaces_concern: vpn_planning
+
+  - id: work.self_hosted_services
+    theme: work
+    prompt: |
+      Anything self-hosted on the network that needs to be reachable
+      (NAS, homelab, web server, game server)?
+      Comma-separated, or "none".
+    kind: choice_multi
+    field_path: work.self_hosted_services
+    choices: [nas, homelab, web, gameserver, mediaserver, none]
+    priority: 4
+    surfaces_concern: ingress_planning
+
+  - id: work.conferencing_quality_critical
+    theme: work
+    prompt: |
+      How critical is conferencing quality during work hours?
+      Choices: nice_to_have / important / mission_critical
+    kind: choice
+    field_path: work.conferencing_quality_critical
+    choices: [nice_to_have, important, mission_critical]
+    priority: 5
+    surfaces_concern: conferencing_priority
+    triggers_when:
+      work.work_from_home: ["daily", "heavy_meetings"]
+    notes: |
+      A doctor doing telehealth, a teacher running synchronous classes, a
+      sales rep on perpetual demos — these are mission-critical and the
+      monitor should treat WAN drops during those hours as HIGH severity,
+      not MEDIUM.

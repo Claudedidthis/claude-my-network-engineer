@@ -1,0 +1,80 @@
+# Usage-pattern probes — bandwidth + radio environment shaping.
+
+probes:
+  - id: usage.peak_window
+    theme: usage
+    prompt: |
+      When is the network busiest? (e.g. "weekday evenings 6-10pm",
+      "Saturday afternoons", "weekday business hours" — free text)
+    kind: free_text
+    field_path: usage.peak_usage_window
+    priority: 4
+    surfaces_concern: capacity_planning
+
+  - id: usage.simultaneous_4k_typical
+    theme: usage
+    prompt: |
+      On a typical evening, roughly how many simultaneous 4K streams
+      run in the house? (0 if nobody streams, 5+ if everyone is on a
+      different show)
+    kind: integer
+    field_path: usage.simultaneous_4k_streams_typical
+    priority: 5
+    surfaces_concern: capacity_planning
+
+  - id: usage.backup_jobs
+    theme: usage
+    prompt: |
+      Any large backup jobs running on the network?
+      (time_machine / backblaze / google_photos / synology_cloud /
+      none — comma-separated)
+    kind: choice_multi
+    field_path: usage.backup_jobs
+    choices: [time_machine, backblaze, google_photos, synology_cloud, idrive, none]
+    priority: 3
+    surfaces_concern: capacity_planning
+
+  - id: usage.bandwidth_intensive_extras
+    theme: usage
+    prompt: |
+      Anything else that's bandwidth-intensive and not obvious?
+      Examples that catch people: podcast/video production uploads,
+      drone footage syncs, frequent large game downloads, cloud-based
+      photo editing, working with large datasets remotely.
+      (free text, "no" is fine)
+    kind: free_text
+    field_path: usage.bandwidth_intensive_extras
+    priority: 3
+    surfaces_concern: capacity_planning
+
+  - id: usage.automation_depth
+    theme: usage
+    prompt: |
+      How deep does your home automation go?
+      Choices:
+        none = no smart-home stuff
+        light = a few smart bulbs, a thermostat
+        medium = automation routines, multiple ecosystems
+        heavy = Home Assistant or similar with dozens of Zigbee/Z-Wave
+                devices and complex automations
+    kind: choice
+    field_path: usage.automation_depth
+    choices: [none, light, medium, heavy]
+    priority: 4
+    surfaces_concern: rf_environment
+    follow_ups:
+      - when: { in: [medium, heavy] }
+        ids: [usage.zigbee_device_count]
+
+  - id: usage.zigbee_device_count
+    theme: usage
+    prompt: |
+      Roughly how many Zigbee devices total? (Zigbee shares the 2.4 GHz
+      spectrum — past about 50 devices the radio environment matters
+      for wifi planning.)
+    kind: integer
+    field_path: usage.zigbee_device_count
+    priority: 4
+    surfaces_concern: rf_environment
+    triggers_when:
+      usage.automation_depth: ["medium", "heavy"]

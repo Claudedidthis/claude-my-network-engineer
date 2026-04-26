@@ -1,0 +1,92 @@
+# Preference probes — operator philosophy, drives recommendation tone.
+
+probes:
+  - id: preferences.cloud_vs_local_control
+    theme: preferences
+    prompt: |
+      How do you feel about cloud management of your network?
+      Choices:
+        cloud_ok = "managing remotely from a phone is great"
+        prefer_local = "I'd rather use the local controller when possible"
+        local_only = "no cloud accounts, no remote anything"
+    kind: choice
+    field_path: preferences.cloud_vs_local_control
+    choices: [cloud_ok, prefer_local, local_only]
+    priority: 4
+    surfaces_concern: management_design
+
+  - id: preferences.privacy_orientation
+    theme: preferences
+    prompt: |
+      Privacy orientation? (low / medium / high — be honest, "low" is
+      a totally legitimate answer)
+    kind: choice
+    field_path: preferences.privacy_orientation
+    choices: [low, medium, high]
+    priority: 4
+    surfaces_concern: dns_filtering
+
+  - id: preferences.diy_comfort
+    theme: preferences
+    prompt: |
+      DIY comfort? (drives whether the agents recommend solutions you
+      can do or solutions you'd need to hire someone for)
+      Choices:
+        high = "I'll pull cable through walls and punch down keystones"
+        medium = "I can run cable along baseboards and crimp ends"
+        low = "plug-and-play, please"
+    kind: choice
+    field_path: preferences.diy_comfort
+    choices: [high, medium, low]
+    priority: 5
+    surfaces_concern: recommendation_aggressiveness
+
+  - id: preferences.maintenance_tolerance
+    theme: preferences
+    prompt: |
+      How often are you willing to think about / tune the network?
+      Choices:
+        zero_touch = "I want to forget it exists"
+        occasional = "every few months is fine"
+        regular_tinkering = "weekly is fine, I enjoy it"
+    kind: choice
+    field_path: preferences.maintenance_tolerance
+    choices: [zero_touch, occasional, regular_tinkering]
+    priority: 4
+    surfaces_concern: monitoring_cadence
+
+  - id: preferences.aesthetic_constraints
+    theme: preferences
+    prompt: |
+      Any aesthetic constraints worth knowing?
+      Examples: "no AP visible in living room", "all gear must be in
+      basement", "we have a custom-built media wall, nothing can be
+      mounted nearby." (free text, "no constraints" is fine)
+    kind: free_text
+    field_path: preferences.aesthetic_constraints
+    priority: 3
+    surfaces_concern: ap_placement
+
+  - id: preferences.budget_initial_usd
+    theme: preferences
+    prompt: |
+      Rough budget for initial buildout in USD? (over what timeframe is
+      OK to mention — "$1500 over six months" works)
+    kind: free_text
+    field_path: preferences.budget_initial_usd
+    priority: 4
+    surfaces_concern: hardware_recs
+
+  - id: preferences.firmware_stance
+    theme: preferences
+    prompt: |
+      Firmware stance?
+      Choices:
+        lts_only = "stable releases only, never the new hotness"
+        mainstream = "official stable releases, accept normal updates"
+        willing_to_run_rc = "I'll run RC builds if there's a feature I want"
+    kind: choice
+    field_path: preferences.firmware_stance
+    choices: [lts_only, mainstream, willing_to_run_rc]
+    priority: 3
+    surfaces_concern: upgrade_aggressiveness

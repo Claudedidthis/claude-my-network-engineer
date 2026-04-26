@@ -1,0 +1,100 @@
+# ISP probes — affects WAN reliability planning, IPv6, failover.
+
+probes:
+  - id: isp.isp_type
+    theme: isp
+    prompt: |
+      What kind of internet connection do you have?
+      (fiber / cable / DSL / fixed-wireless / Starlink / 5G-home / other)
+    kind: choice
+    field_path: isp.isp_type
+    choices: [fiber, cable, dsl, fixed_wireless, starlink, 5g_home, other]
+    priority: 8
+    surfaces_concern: wan_planning
+    follow_ups:
+      - when: { in: [cable, dsl] }
+        ids: [isp.modem_router_situation, isp.ipv6_supported]
+      - when: starlink
+        ids: [isp.failover_concern]
+
+  - id: isp.contracted_speeds
+    theme: isp
+    prompt: |
+      Roughly what speeds are you paying for? (down/up in Mbps —
+      e.g. "1000/50" for gigabit cable, "300/300" for fiber)
+    kind: free_text
+    field_path: isp.isp_name
+    priority: 6
+    surfaces_concern: wan_planning
+    notes: |
+      Captured as free text initially; a follow-on probe could split into
+      down/up integers. Many home networks are upload-bound for video calls
+      even when they think they have "fast internet".
+
+  - id: isp.delivered_speeds_acceptable
+    theme: isp
+    prompt: |
+      Are you actually getting something close to what you pay for? Or
+      do speed tests fall well short of the contract?
+    kind: choice
+    field_path: isp.delivered_speeds_acceptable
+    choices: [yes, no, sometimes, never_tested]
+    priority: 5
+    surfaces_concern: wan_planning
+
+  - id: isp.modem_router_situation
+    theme: isp
+    prompt: |
+      How is your ISP's box set up?
+      Choices:
+        clean_handoff = pure modem with ethernet out (you bring the router)
+        combo_unit = ISP combo modem-router (might be in bridge mode)
+        isp_required_router = ISP forces you to use their router
+        unknown
+    kind: choice
+    field_path: isp.modem_router_situation
+    choices: [clean_handoff, combo_unit, isp_required_router, unknown]
+    priority: 6
+    surfaces_concern: wan_planning
+
+  - id: isp.ipv6_supported
+    theme: isp
+    prompt: Does your ISP do IPv6 properly? (yes / no / no idea)
+    kind: choice
+    field_path: isp.ipv6_supported
+    choices: [yes, no, unknown]
+    priority: 4
+    surfaces_concern: wan_planning
+
+  - id: isp.failover_concern
+    theme: isp
+    prompt: |
+      Is WAN failover (a second internet connection that kicks in when
+      the primary dies) something you care about? Common reasons: work-
+      from-home cant-be-down, security cameras need cloud upload always,
+      home-business uptime.
+    kind: boolean
+    field_path: isp.failover_concern
+    priority: 4
+    surfaces_concern: wan_planning
+
+  - id: isp.static_ip
+    theme: isp
+    prompt: |
+      Do you have a static public IP — or do you need one? (some VPN
+      ingress and self-hosted services need one)
+    kind: choice
+    field_path: isp.static_ip
+    choices: [have_one, need_one, dont_need, unknown]
+    priority: 3
+    surfaces_concern: wan_planning
+
+  - id: isp.data_cap
+    theme: isp
+    prompt: |
+      Does your ISP have a monthly data cap, and if so what is it?
+      (e.g. "1.2 TB" or "no cap" or "I have no idea")
+    kind: free_text
+    field_path: isp.data_cap_gb
+    priority: 3
+    surfaces_concern: wan_planning

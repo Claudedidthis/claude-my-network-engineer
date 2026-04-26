@@ -1,0 +1,86 @@
+# Identification tips — keyed by manufacturer (lowercase substring match).
+# Used by `nye registry walkthrough` when the user can't immediately identify a MAC.
+#
+# Format: a list of practical, physical-world steps to confirm what a device is.
+
+Apple:
+  - "On the device: Settings → General → About → Wi-Fi Address (iOS) or System Settings → Network → Wi-Fi → Details (macOS)."
+  - "Find My (icloud.com) shows your Apple devices and can identify which one is online."
+  - "If MAC starts with '02', '06', '0a', or '0e' it is a private/randomized MAC — turn off 'Private Wi-Fi Address' for that SSID to see the real one."
+  - "Tier: typically TRUST for laptops/phones/iPads."
+
+Ubiquiti:
+  - "These are almost always your own UniFi gear (UDM, switches, APs, cameras). Check the UniFi Network app: Devices tab → match the MAC."
+  - "UniFi Protect cameras have MACs with 'fcecda', '18e829', etc. — visible on the device label too."
+  - "Tier: CAMERA for Protect cameras, leave devices in the device_register (not client_register)."
+
+Amazon:
+  - "Open the Alexa app → Devices → All Devices. Match by name or last-active time."
+  - "Echo dots have a labeled MAC on the bottom. Fire TV: Settings → My Fire TV → About → Network."
+  - "Ring doorbells: Ring app → Devices → Device Health → Network."
+  - "Tier: IOT for Alexa/Echo, CAMERA for Ring."
+
+Google:
+  - "Google Home app → Settings → Wi-Fi or per-device → Device information."
+  - "Chromecast: cast a tab from Chrome and see which device responds. Or unplug and watch UniFi for a drop."
+  - "Pixel phone: Settings → About phone → Wi-Fi MAC address."
+  - "Tier: IOT for Home/Chromecast/Nest, TRUST for Pixel phones, CAMERA for Nest Cam."
+
+"Philips Hue":
+  - "The Hue Bridge has a MAC printed on the bottom; it's also visible in the Hue app: Settings → My Hue System → Bridge → Network."
+  - "Individual bulbs do not have IP addresses — they speak Zigbee. Only the bridge appears here."
+  - "Tier: IOT."
+
+Lutron:
+  - "The Lutron Caseta SmartBridge is in the Lutron app: Settings → Advanced → Integration. MAC visible there."
+  - "Tier: IOT. Critical to home function — wall switches stop responding to dimming if the bridge is down."
+
+Sonos:
+  - "Sonos app → Settings → System → About My System. Each speaker shows IP and MAC."
+  - "Or pull a speaker off the network and see which one drops in UniFi."
+  - "Tier: IOT. mDNS-dependent — note 'requires mDNS reflector' if behind VLAN."
+
+"Microsoft Xbox":
+  - "Xbox: Settings → Network → Advanced settings → Wired/Wireless MAC."
+  - "Tier: IOT (untrusted by Microsoft's own threat model, despite being a console)."
+
+Sony:
+  - "PlayStation: Settings → System → System Information → MAC."
+  - "Tier: IOT."
+
+Samsung:
+  - "Smart TVs: Settings → All Settings → General → Network → Network Status → Network Settings (look for 'IP Information' / 'MAC')."
+  - "Phones/tablets: Settings → About phone → Status → Wi-Fi MAC address."
+  - "Tier: IOT for TVs/appliances, TRUST for personal phones."
+
+Roku:
+  - "Roku: Settings → System → About — MAC visible there."
+  - "Tier: IOT."
+
+"TP-Link":
+  - "Kasa app → device → Settings → Device info."
+  - "Tier: IOT."
+
+Xerox:
+  - "Walk to the printer, press the menu button → Information → Network → look for IP/MAC."
+  - "Tier: IOT. Printers with admin UI exposed are a real attack surface — restrict their port forwards."
+
+"Raspberry Pi":
+  - "These are your own Pis. SSH in: `ip a` shows the MAC. If unsure which Pi, run `hostname` while connected."
+  - "Tier: depends on what the Pi runs. Home server → TRUST. Smart-home script → IOT."
+
+"Nest Labs":
+  - "Google Home app → Settings → Wi-Fi → look up the device. Newer Nest gear shows up under Google."
+  - "Tier: IOT for thermostats/Protect, CAMERA for Nest Cam/Hello."
+
+"Marantz/Denon":
+  - "Receiver: front panel menu → Network → Information shows IP and MAC."
+  - "Tier: IOT (the receiver firmware is rarely patched and accepts external playback streams)."
+
+# Default tips when manufacturer is unknown
+unknown:
+  - "Try `arp -a` from another device on the same VLAN to map IP↔MAC."
+  - "Power-cycle the suspected device while watching the UniFi client list — the disappearing MAC is your match."
+  - "Look up the OUI manually: macvendors.com or wireshark.org/tools/oui-lookup.html"
+  - "Check the device's physical label — most consumer gear prints the MAC."
+  - "If still unclear, set tier_override: UNKNOWN and revisit later."

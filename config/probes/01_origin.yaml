@@ -1,0 +1,57 @@
+# Origin-story probes — why the operator is here.
+# These run first: the trigger event shapes how aggressive vs. conservative the
+# rest of the conversation should be.
+
+probes:
+  - id: origin.trigger_event
+    theme: origin
+    prompt: |
+      Before we get into specifics — what brought you here? What broke or
+      frustrated you enough that you started looking at proper UniFi gear or
+      this tool? (free text — even one sentence is fine)
+    kind: free_text
+    field_path: origin.trigger_event
+    priority: 10
+    surfaces_concern: framing
+    notes: |
+      The honest answer here is the most useful single signal in the whole
+      onboarding. "Buffering during work calls" → conferencing-priority WAN
+      design. "Solar installer put their gateway on my network" → DMZ +
+      third-party-isolation work. "Wanted cameras without cloud subscription"
+      → local NVR + camera-VLAN architecture.
+
+  - id: origin.previous_setup
+    theme: origin
+    prompt: |
+      What did you have before this? (an ISP combo box, an Eero, an old
+      Asus, nothing — all valid answers)
+    kind: free_text
+    field_path: origin.previous_setup
+    priority: 6
+    surfaces_concern: framing
+
+  - id: origin.biggest_frustration
+    theme: origin
+    prompt: |
+      What's the *one thing* that frustrates you most about your current
+      network — the thing that, if it were fixed, you'd be 80% happy?
+    kind: free_text
+    field_path: origin.biggest_frustration
+    priority: 8
+    surfaces_concern: framing
+    notes: |
+      Used as a north star for the auditor: a finding tied to the operator's
+      stated biggest frustration gets nudged up a severity band.
+
+  - id: origin.mode
+    theme: origin
+    prompt: |
+      Are you starting with an existing UniFi setup that's been running
+      (heritage), or a fresh install / willing to start clean (greenfield)?
+      Heritage = walk through what's there and capture why it exists.
+      Greenfield = design from scratch using your profile.
+    kind: choice
+    field_path: mode
+    choices: [heritage, greenfield, unknown]
+    priority: 9
+    surfaces_concern: framing

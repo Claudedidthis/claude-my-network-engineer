@@ -1,0 +1,120 @@
+# Upgrade Catalog — ClaudeMyNetworkEngineer
+#
+# Tracks UniFi hardware: Wi-Fi generation, EOL status, recommended successor.
+# The Upgrade Agent (agents/upgrade_agent.py) reads this to score each device
+# in `get_devices()` and emit UpgradeRecommendation entries to
+# logs/upgrade_recommendations.log.
+#
+# Match priority: device.model exact → catalog.match_models[*] exact →
+# device.model substring against catalog.match_models[*].
+
+# Score weights (sum produces the 0-100 score; clamped to 100).
+weights:
+  eol:                40    # Hardware reached end-of-life
+  aging:              15    # Pre-current-generation, still supported
+  has_successor:      20    # A clear successor exists in the catalog
+  high_traffic_mult:  1.2   # Multiplier when device serves >10 active clients
+  threshold_emit:     15    # Below this score, emit no recommendation
+
+severity_bands:
+  HIGH:     70
+  MEDIUM:   40
+  LOW:      15
+
+# Per-device entries.
+catalog:
+  - model: "UAP-AC-Lite"
+    type: access_point
+    wifi_generation: 5
+    eol: true
+    eol_date: "2024-09-01"
+    aging: true
+    successor: "U7 Pro Wall"
+    successor_msrp_usd: 179
+    notes: "Wi-Fi 5 EOL'd in 2024 — no more security or feature updates from Ubiquiti."
+
+  - model: "U6 LR"
+    type: access_point
+    wifi_generation: 6
+    eol: false
+    aging: false
+    successor: null
+    notes: "Current Wi-Fi 6 long-range AP. No upgrade needed."
+
+  - model: "U6 IW"
+    type: access_point
+    wifi_generation: 6
+    eol: false
+    aging: false
+    successor: null
+    notes: "Current Wi-Fi 6 in-wall AP. No upgrade needed."
+
+  - model: "FlexHD"
+    match_models: ["FlexHD", "UAP-FlexHD"]
+    type: access_point
+    wifi_generation: 5
+    eol: false
+    aging: false
+    successor: "U7 Pro"
+    successor_msrp_usd: 189
+    notes: "Wi-Fi 5 mesh-capable AP. Wi-Fi 7 successor offers ~3x throughput at the same form factor."
+
+  - model: "U7-Pro"
+    type: access_point
+    wifi_generation: 7
+    eol: false
+    aging: false
+    successor: null
+    notes: "Current Wi-Fi 7 generation."
+
+  - model: "US 24 PoE 250W"
+    match_models: ["US 24 PoE 250W", "US-24-250W", "USW-24-PoE-250W"]
+    type: switch
+    generation: 1
+    eol: false
+    aging: true
+    successor: "USW Pro 24 PoE"
+    successor_msrp_usd: 749
+    notes: "Gen-1 PoE switch. Current Pro line adds 10G uplinks and full L3 features."
+
+  - model: "US 8 PoE 150W"
+    match_models: ["US 8 PoE 150W", "US-8-150W", "USW-8-150W"]
+    type: switch
+    generation: 1
+    eol: false
+    aging: true
+    successor: "USW Pro 8 PoE"
+    successor_msrp_usd: 459
+    notes: "Gen-1 8-port PoE switch. Pro successor adds SFP+ uplinks."
+
+  - model: "USW Pro Max 16"
+    type: switch
+    generation: 3
+    eol: false
+    aging: false
+    successor: null
+    notes: "Current generation Pro Max with SFP+. No upgrade needed."
+
+  - model: "USW-Lite-8-PoE"
+    type: switch
+    generation: 2
+    eol: false
+    aging: false
+    successor: null
+    notes: "Current generation Lite line."
+
+  - model: "UniFi Dream Machine PRO SE"
+    type: gateway
+    generation: 2
+    eol: false
+    aging: false
+    successor: null
+    notes: "Current generation gateway with UniFi OS 5.x."
+
+  - model: "UP Chime PoE"
+    match_models: ["UP-Chime-PoE", "UP Chime PoE"]
+    type: chime
+    eol: false
+    aging: false
+    successor: null
+    notes: "Compatible with current G4/G5 doorbells. No upgrade needed."

@@ -1,0 +1,71 @@
+# Future-state probes — affects investment calculus and architecture choices.
+
+probes:
+  - id: future.moving_within_2_years
+    theme: future
+    prompt: |
+      Likely to move (or significantly renovate) within the next 2 years?
+      Changes the calculus on running cable in walls.
+      (yes / no / maybe)
+    kind: choice
+    field_path: future.moving_within_2_years
+    choices: [yes, no, maybe]
+    priority: 5
+    surfaces_concern: investment_horizon
+
+  - id: future.planned_renovation
+    theme: future
+    prompt: |
+      Any renovation planned that opens walls (good time to add ethernet
+      runs)?
+    kind: boolean
+    field_path: future.planned_renovation
+    priority: 4
+    surfaces_concern: cable_planning
+    follow_ups:
+      - when: true
+        ids: [future.renovation_scope]
+
+  - id: future.renovation_scope
+    theme: future
+    prompt: |
+      Briefly — what renovation? (which rooms, what timeframe)
+    kind: free_text
+    field_path: future.renovation_scope
+    priority: 3
+    surfaces_concern: cable_planning
+    triggers_when:
+      future.planned_renovation: true
+
+  - id: future.household_growth
+    theme: future
+    prompt: |
+      Any planned changes to who lives there in the next year or two?
+      (kid going to / coming home from college, aging parent moving in,
+      etc. — yes/no, free text follow-up if you want)
+    kind: boolean
+    field_path: future.household_growth_planned
+    priority: 3
+    surfaces_concern: capacity_planning
+
+  - id: future.planned_devices
+    theme: future
+    prompt: |
+      Any device additions you're already planning?
+      (ev_charger / solar / battery_storage / more_cameras / home_theater /
+      homelab / outdoor_audio — comma-separated, "none" if none)
+    kind: choice_multi
+    field_path: future.planned_devices
+    choices: [ev_charger, solar, battery_storage, more_cameras, home_theater, homelab, outdoor_audio, none]
+    priority: 3
+    surfaces_concern: capacity_planning
+
+  - id: future.homelab_plans
+    theme: future
+    prompt: |
+      Any plans to run a homelab — Proxmox, Kubernetes, self-hosted
+      services accessible from outside?
+    kind: boolean
+    field_path: future.homelab_plans
+    priority: 3
+    surfaces_concern: ingress_planning

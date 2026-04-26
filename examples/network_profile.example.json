@@ -1,0 +1,41 @@
+{
+  "_comment": "Generic worked example. Copy this to config/network_profile.json (gitignored) and edit for your own deployment. The values below are placeholders; replace them with your actual gear.",
+  "deployment": {
+    "owner": "<your name>",
+    "site_name": "Home",
+    "timezone": "America/New_York"
+  },
+  "gateway": {
+    "model": "UDM-Pro",
+    "host": "192.168.1.1",
+    "unifi_os_version": "<your version>",
+    "network_app_version": "<your version>",
+    "protect_app_version": "<your version, if Protect is in use>",
+    "site_uuid_hint": "resolved at runtime via GET /sites; don't hardcode"
+  },
+  "isp": {
+    "provider": "<your ISP name>",
+    "external_ipv4": "<your public IPv4 — but consider whether you want this in any file outside .env>",
+    "monthly_data_cap_tb": null,
+    "typical_monthly_usage_tb": null
+  },
+  "switches": [
+    "<list your switches by model code, e.g. USW-Pro-Max-24-PoE>"
+  ],
+  "access_points": [
+    "<list your APs by model code>"
+  ],
+  "protect_cameras": [
+    {"name": "<camera name>", "expected_online": true}
+  ],
+  "expected_offline_devices": [
+    "<device name(s) you intentionally keep powered off; better to manage these via config/dismissals.yaml>"
+  ],
+  "client_count_estimate": 0,
+  "household_priorities": [
+    "security: IoT/camera isolation from trusted devices",
+    "reliability: uptime, stable connections, DNS resolution",
+    "throughput: channel efficiency, band steering",
+    "visibility: human-readable reporting"
+  ]
+}

@@ -1,0 +1,94 @@
+# AI Runtime Config — ClaudeMyNetworkEngineer
+#
+# Controls model selection per job, monthly budget caps, and per-call limits.
+# Loaded by src/network_engineer/agents/ai_runtime.py at startup.
+#
+# All jobs fall back to a deterministic placeholder when AI_RUNTIME_ENABLED=false.
+
+models:
+  # Anthropic model IDs — see system prompt knowledge cutoff for current names.
+  opus:   "claude-opus-4-7"
+  sonnet: "claude-sonnet-4-6"
+  haiku:  "claude-haiku-4-5-20251001"
+
+# Job → model routing. Some jobs branch on context (see notes).
+jobs:
+  analyze_security_posture:
+    model: opus
+    max_output_tokens: 4096
+    cadence: daily
+    notes: "Full security posture review. Daily cron in production."
+
+  generate_monthly_report:
+    model: opus
+    max_output_tokens: 8192
+    cadence: monthly
+    notes: "Long-form monthly narrative. One call per month."
+
+  review_config_change:
+    model: sonnet
+    escalate_to: opus
+    escalate_when_action_contains:
+      - firewall
+      - vlan
+      - port_forward
+      - camera
+      - protect
+      - admin
+      - api_key
+      - dhcp
+    max_output_tokens: 2048
+    cadence: per-change
+    notes: "Independent reviewer pass. Escalates to Opus when change touches sensitive surface."
+
+  explain_anomaly:
+    model: sonnet
+    max_output_tokens: 1024
+    cadence: per-event
+    notes: "Short explanation of a Monitor event for human readers."
+
+  natural_language_query:
+    model: sonnet
+    fallback_to_haiku_when_simple: true
+    max_output_tokens: 1024
+    cadence: on-demand
+    notes: "iOS chat queries. Simple lookups route to Haiku."
+
+  score_upgrade_recommendation:
+    model: haiku
+    max_output_tokens: 512
+    cadence: weekly
+    notes: "Tiny narrative + score per device. Cheap to call."
+
+# Per-call request limits.
+limits:
+  max_input_tokens_per_call: 60000
+  request_timeout_seconds: 60
+
+# Monthly spend caps in US dollars. The runtime logs token usage on every call;
+# Phase 11 (cloud sync) is responsible for actual cap enforcement based on rolled-up spend.
+budgets:
+  monthly_total_usd: 20.00
+  monthly_per_model_usd:
+    opus: 10.00
+    sonnet: 7.00
+    haiku: 3.00
+
+# Estimated cost per million tokens (USD). Used for log-time cost annotation only.
+# Update when Anthropic pricing changes; not load-bearing for behavior.
+pricing:
+  opus:
+    input_per_mtok: 15.00
+    output_per_mtok: 75.00
+    cache_write_multiplier: 1.25
+    cache_read_multiplier: 0.10
+  sonnet:
+    input_per_mtok: 3.00
+    output_per_mtok: 15.00
+    cache_write_multiplier: 1.25
+    cache_read_multiplier: 0.10
+  haiku:
+    input_per_mtok: 1.00
+    output_per_mtok: 5.00
+    cache_write_multiplier: 1.25
+    cache_read_multiplier: 0.10

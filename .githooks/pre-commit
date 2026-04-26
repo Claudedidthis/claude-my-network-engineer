@@ -1,0 +1,60 @@
+#!/bin/sh
+# pre-commit hook for ClaudeMyNetworkEngineer
+# Blocks committing .env files or files containing obvious secret patterns.
+#
+# Active hook lives at .git/hooks/pre-commit (per-clone). The version-controlled
+# source is .githooks/pre-commit. To install in a fresh clone:
+#   cp .githooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+# Or set:
+#   git config core.hooksPath .githooks
+#
+# Edit this file directly to tune patterns. Do not bypass with --no-verify.
+
+set -e
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$staged" ] && exit 0
+
+# 1. Refuse any .env-like path
+env_files=$(printf '%s\n' "$staged" \
+    | grep -E '(^|/)\.env(\.local|\.production|\..+\.local)?$' || true)
+if [ -n "$env_files" ]; then
+    echo "ERROR: refusing to commit .env file(s):"
+    printf '%s\n' "$env_files" | sed 's/^/  /'
+    echo
+    echo "These are gitignored for a reason."
+    echo "Unstage with: git restore --staged <file>"
+    exit 1
+fi
+
+# 2. Scan staged content for obvious secret patterns
+PATTERNS='sk-ant-api[0-9]{2}-|UNIFI_API_KEY=[A-Za-z0-9]{16,}|SUPABASE_SERVICE_KEY=eyJ|R2_SECRET_KEY=[A-Za-z0-9/+]{20,}|APNS_KEY_ID=[A-Z0-9]{10}|-----BEGIN [A-Z ]*PRIVATE KEY-----'
+
+violations=$(mktemp)
+trap 'rm -f "$violations"' EXIT
+
+printf '%s\n' "$staged" | while IFS= read -r file; do
+    [ -z "$file" ] && continue
+    # Skip the hook source files themselves — they define the patterns
+    case "$file" in
+        .githooks/pre-commit|.git/hooks/pre-commit) continue ;;
+    esac
+    # Skip binaries (numstat reports `-` for binary)
+    if git diff --cached --numstat -- "$file" 2>/dev/null | awk '{print $1}' | grep -q '^-$'; then
+        continue
+    fi
+    if git show ":$file" 2>/dev/null | grep -E -q "$PATTERNS"; then
+        printf '  %s\n' "$file" >> "$violations"
+    fi
+done
+
+if [ -s "$violations" ]; then
+    echo "ERROR: secret-pattern match in staged file(s):"
+    cat "$violations"
+    echo
+    echo "Patterns: $PATTERNS"
+    echo "Unstage and remove the secrets. Do not bypass with --no-verify."
+    exit 1
+fi
+
+exit 0

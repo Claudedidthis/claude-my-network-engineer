@@ -1,0 +1,128 @@
+# Household profile — operator-supplied situated context.
+#
+# Normally populated interactively via `nye onboard` (probe-driven
+# conversation). This example shows the YAML shape so you can edit by hand
+# if you prefer, or to see what the onboarding flow produces.
+#
+# Every field is optional. Submodels (building, isp, ...) can be partially
+# filled. Run `nye onboard` to incrementally fill in the rest — the engine
+# picks up where you left off.
+
+mode: heritage                    # heritage | greenfield | unknown
+use_case_summary: "Family of 4 in 1948 plaster-walled house; WFH + smart home + 5 cameras"
+
+building:
+  home_type: house
+  construction_era: pre_1950
+  num_floors: 2
+  has_basement: true
+  has_attic: true
+  attic_accessible_for_cable: true
+  basement_accessible_for_cable: true
+  construction_material: [plaster, metal_lath, brick]
+  floor_plan: traditional
+  square_footage: 2400
+  outbuildings: [shed]
+  garage_type: attached
+  isp_entry_location: "basement utility room, north wall"
+  core_location: "basement utility room"
+  existing_cable: [coax, phone]
+  can_run_new_cable: yes_diy
+  rental: false
+  partner_tolerance_holes: medium
+
+isp:
+  isp_type: cable
+  isp_name: "<your ISP>"
+  contracted_down_mbps: 1000
+  contracted_up_mbps: 50
+  delivered_speeds_acceptable: sometimes
+  ipv6_supported: yes
+  modem_router_situation: clean_handoff
+  failover_concern: false
+  static_ip: false
+  data_cap_gb: 1200
+
+household:
+  num_residents: 4
+  age_bands: [adult, adult, school_age, school_age]
+  tech_literacy_levels: [expert, comfortable, novice, novice]
+  has_kids: true
+  kid_age_band: school_age
+  kids_savvy_with_workarounds: not_yet
+  guest_frequency: occasional
+
+work:
+  work_from_home: heavy_meetings
+  multiple_wfh_simultaneous: false
+  work_types: [video_calls, email, dev]
+  corporate_vpn: yes
+  corporate_vpn_split_tunnel: split
+  conferencing_quality_critical: mission_critical
+
+devices:
+  approx_device_count: 36
+  primary_platforms: [apple, mixed]
+  smart_home_ecosystems: [homekit, alexa]
+  gaming: casual_console
+  camera_architecture: local_nvr
+  has_video_doorbell: true
+  has_smart_locks: false
+  smart_lighting_protocols: [zigbee]
+  smart_thermostat: true
+  has_solar: true
+  solar_third_party_iot: yes        # ← the David-DMZ trigger
+  has_battery_storage: false
+  ev_charger: planned
+  has_nas: false
+  has_printers: true
+
+security:
+  iot_isolation_appetite: strict
+  third_party_devices_present: yes
+  third_party_devices_description: "Solar installer's Zigbee gateway in basement; talks to their cloud."
+  vpn_usage: [remote_in]
+  iot_phone_home_concern: mild
+  dns_filtering_interest: maybe
+  content_filter_for_kids: true
+
+usage:
+  peak_usage_window: "weekday evenings 6-10pm"
+  simultaneous_4k_streams_typical: 2
+  backup_jobs: [time_machine]
+  automation_depth: medium
+  zigbee_device_count: 18
+
+infrastructure:
+  has_ups: yes
+  poe_budget_w: 250
+  willing_to_run_power_to_aps: true
+  rack_space: shelf
+  outdoor_coverage_required: false
+
+preferences:
+  cloud_vs_local_control: prefer_local
+  privacy_orientation: medium
+  diy_comfort: medium
+  maintenance_tolerance: occasional
+  budget_initial_usd: 1500
+  firmware_stance: mainstream
+
+future:
+  moving_within_2_years: no
+  planned_renovation: false
+  planned_devices: [ev_charger, more_cameras]
+
+origin:
+  trigger_event: "Solar installer put their Zigbee gateway on my main wifi. Realized I needed to isolate it before they had access to my LAN forever."
+  previous_setup: "ISP combo box + Eero mesh"
+  biggest_frustration: "No visibility into what's actually on the network"
+
+# Probe progress tracking — let onboarding resume across sessions
+probes_answered:
+  - origin.trigger_event
+  - origin.mode
+  - building.construction_era
+  - devices.has_solar
+  - devices.solar_third_party_iot
+  # ... etc.

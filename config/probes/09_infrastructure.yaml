@@ -1,0 +1,79 @@
+# Infrastructure probes — UPS, PoE, rack space, outdoor coverage.
+# Affects what hardware can actually be deployed where.
+
+probes:
+  - id: infrastructure.has_ups
+    theme: infrastructure
+    prompt: |
+      Do you have a UPS (battery backup) on the network gear?
+      (yes / no / planned)
+    kind: choice
+    field_path: infrastructure.has_ups
+    choices: [yes, no, planned]
+    priority: 4
+    surfaces_concern: reliability_planning
+
+  - id: infrastructure.poe_budget_w
+    theme: infrastructure
+    prompt: |
+      What's your current PoE switch capacity in watts (total budget)?
+      Common values: 60W, 120W, 150W, 250W, 500W. Or "I don't know" — fine.
+    kind: free_text
+    field_path: infrastructure.poe_budget_w
+    priority: 4
+    surfaces_concern: ap_placement
+
+  - id: infrastructure.willing_to_run_power_to_aps
+    theme: infrastructure
+    prompt: |
+      Are you willing to run power (PoE injectors or wall outlets) to
+      where APs need to live, if the optimal placement isn't near an
+      existing outlet?
+    kind: boolean
+    field_path: infrastructure.willing_to_run_power_to_aps
+    priority: 4
+    surfaces_concern: ap_placement
+
+  - id: infrastructure.rack_space
+    theme: infrastructure
+    prompt: |
+      Where will the network gear physically live?
+      Choices:
+        full_rack = proper rack with rails (in basement / closet)
+        half_rack = 12U or shorter
+        shelf = open shelf in a closet or utility area
+        closet = on the floor of a closet, hopefully
+        none = "wherever I can hide it" (extremely common, no shame)
+    kind: choice
+    field_path: infrastructure.rack_space
+    choices: [full_rack, half_rack, shelf, closet, none]
+    priority: 4
+    surfaces_concern: hardware_recs
+
+  - id: infrastructure.outdoor_coverage_required
+    theme: infrastructure
+    prompt: |
+      Do you need wifi coverage outside the building? (backyard for
+      kids' tablets, deck for laptops, garden for irrigation
+      controllers, garage for EV-charger telemetry, etc.)
+    kind: boolean
+    field_path: infrastructure.outdoor_coverage_required
+    priority: 4
+    surfaces_concern: rf_planning
+    follow_ups:
+      - when: true
+        ids: [infrastructure.outdoor_areas]
+
+  - id: infrastructure.outdoor_areas
+    theme: infrastructure
+    prompt: |
+      Which outdoor areas need coverage?
+      (backyard / front_porch / driveway / detached_garage / shed /
+      pool_house / other — comma-separated)
+    kind: choice_multi
+    field_path: infrastructure.outdoor_areas
+    choices: [backyard, front_porch, driveway, detached_garage, shed, pool_house, other]
+    priority: 3
+    surfaces_concern: rf_planning
+    triggers_when:
+      infrastructure.outdoor_coverage_required: true

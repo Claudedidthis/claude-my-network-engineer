@@ -1,0 +1,73 @@
+# Environment & secrets — NEVER commit
+.env
+.env.local
+.env.production
+.env.*.local
+
+# User-specific config (only example.* is tracked)
+config/network_profile.json
+config/device_register.yaml
+config/client_register.yaml
+config/household_profile.yaml
+config/dismissals.yaml
+config/origin_stories.yaml
+config/profile_history.yaml
+
+# Operator-specific Claude Code project instructions — keeps personal
+# network/household details out of the public repo. CLAUDE.md (the public
+# tracked file) imports it via `@CLAUDE.local.md` when present.
+CLAUDE.local.md
+
+# Live-network captured fixtures — contain real MACs, IPs, hostnames.
+# Forks should capture their own with `nye test --snapshot`.
+tests/fixtures/baseline_snapshot.json
+tests/fixtures/*.local.json
+
+# Runtime data
+logs/
+snapshots/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg
+.venv/
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# iOS / Xcode
+ios_app/build/
+ios_app/DerivedData/
+*.xcuserstate
+*.xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# Cloudflare credentials
+.cloudflared/cert.pem
+*.cloudflared.json
+~/.cloudflared/
+
+# Claude Code local overrides (project policy lives in .claude/settings.json which IS tracked)
+.claude/settings.local.json

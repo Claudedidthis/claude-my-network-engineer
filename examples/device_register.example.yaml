@@ -1,0 +1,32 @@
+# Device register — operator annotations for UniFi-managed devices (APs/switches/gateway).
+#
+# Copy this to config/device_register.yaml (gitignored) and edit.
+# Run `nye registry walkthrough` to populate interactively from the live network.
+#
+# Field reference (matches DeviceRegistryEntry in tools/schemas.py):
+#   mac            REQUIRED — primary key. Lowercase colon-separated.
+#   name_hint      Display name from controller (auto-populated by walkthrough).
+#   location       "master bedroom", "garage rack", "downstairs hallway"
+#   rationale      Why this device is here. e.g. "fills coverage gap from main AP"
+#   role           primary | secondary | mesh | wired-backbone | gateway
+#   criticality    CRITICAL | HIGH | MEDIUM | LOW
+#   notes          Free text — anything else useful.
+#   deployed_at    ISO8601 — when the device was first installed (optional).
+#   last_inspected ISO8601 — last time you physically checked it (optional).
+
+devices:
+  - mac: "78:8a:20:00:00:00"
+    name_hint: "U6 IW"
+    location: "master bedroom"
+    rationale: "Coverage gap from main AP — bedroom phones/iPads need dedicated AP for sleep tracking + alarms."
+    role: "secondary"
+    criticality: "HIGH"
+    notes: "Hardwired uplink via in-wall ethernet, not mesh. If replaced with a non-IW form factor, mounting must be redesigned."
+
+  - mac: "f0:9f:c2:00:00:00"
+    name_hint: "Home-UDM"
+    location: "office rack"
+    rationale: "Main gateway + Protect controller."
+    role: "gateway"
+    criticality: "CRITICAL"
+    notes: "Loss = entire home offline. Always REQUIRES_APPROVAL for any change touching this device."

@@ -1,0 +1,26 @@
+# Alert Thresholds — ClaudeMyNetworkEngineer
+#
+# Used by the Monitor agent to evaluate live metrics on each poll.
+# Thresholds may be overridden per-deployment by editing this file.
+
+wifi:
+  tx_retry_rate_warning: 0.20          # 20%
+  tx_retry_rate_critical: 0.35         # 35%
+  client_signal_poor: -75              # dBm
+  wifi_connectivity_success_min: 0.95  # 95%
+  dns_success_min: 0.95                # 95%
+
+wan:
+  packet_loss_warning: 0.005           # 0.5%
+  packet_loss_critical: 0.01           # 1%
+  latency_warning_ms: 50
+  latency_critical_ms: 100
+
+security:
+  unknown_device_action: warn          # warn | block
+  new_device_notify: true
+  expected_offline_devices: []         # populated per-deployment in network_profile.json
+
+data:
+  monthly_usage_info_tb: 4.0
+  monthly_usage_warning_tb: 5.0

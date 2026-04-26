@@ -1,0 +1,71 @@
+# Permission Model — ClaudeMyNetworkEngineer
+#
+# Three tiers govern every write the agent might attempt:
+#   AUTO              — agent applies without human confirmation (still snapshots, logs, verifies)
+#   REQUIRES_APPROVAL — agent presents the plan and waits for explicit "proceed"
+#   NEVER             — agent must refuse and log the attempt
+#
+# Default for any action NOT explicitly listed is REQUIRES_APPROVAL.
+# Forks may tighten or loosen AUTO; do not move firewall/VLAN/camera/admin actions out of
+# REQUIRES_APPROVAL or NEVER.
+
+AUTO:
+  description: "Safe, reversible, low-blast-radius changes only"
+  notes: "Agent still snapshots before, verifies after, and writes a full audit log entry."
+  actions:
+    - rename_device                       # match naming convention
+    - update_device_description           # notes/labels
+    - set_ap_channel_2_4ghz
+    - set_ap_channel_5ghz
+    - set_ap_tx_power
+    - set_band_steering                   # enable/disable
+    - restart_offline_ap
+    - block_known_client_by_mac           # existing clients only
+    - unblock_known_client_by_mac
+    - update_dns_assignment_non_gateway   # client DNS overrides only
+    - tag_client_with_known_device_type
+
+REQUIRES_APPROVAL:
+  description: "Meaningful infrastructure changes — one wrong move and someone's Zoom call dies"
+  notes: "Agent writes a full proposal (current state, proposed change, risk, rollback) to logs/recommendations.log and waits."
+  actions:
+    - create_vlan
+    - modify_vlan
+    - delete_vlan
+    - create_firewall_rule
+    - modify_firewall_rule
+    - delete_firewall_rule
+    - create_port_forward
+    - modify_port_forward
+    - delete_port_forward
+    - change_default_gateway
+    - change_routing
+    - create_wifi_network
+    - modify_wifi_network
+    - delete_wifi_network
+    - dhcp_scope_change
+    - ip_assignment_change
+    - switch_port_profile_change
+    - any_change_affecting_protect_cameras
+    - firmware_update_any_device
+    - admin_account_change
+    - api_key_change
+    - any_change_to_udm_itself
+    - enable_network_segment
+    - disable_network_segment
+    - ids_ips_rule_change
+    - rollback_from_snapshot              # rolling back IS itself a write — needs approval
+
+NEVER:
+  description: "Hard stops. Agent must refuse and log the attempt."
+  actions:
+    - delete_device_from_controller
+    - factory_reset_any_device
+    - disable_wan
+    - expose_management_to_internet
+    - store_credentials_plaintext
+    - modify_env_file
+    - push_change_without_snapshot
+    - apply_more_than_one_change_per_operation
+    - disable_firewall_entirely
+    - create_open_wifi_network

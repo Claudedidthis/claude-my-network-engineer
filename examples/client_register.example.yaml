@@ -1,0 +1,39 @@
+# Client register — operator annotations for stations/clients.
+#
+# Copy this to config/client_register.yaml (gitignored) and edit.
+# Run `nye registry walkthrough` to populate interactively — the walkthrough
+# helps you identify unknown MACs using OUI lookup + per-manufacturer tips.
+#
+# Field reference (matches ClientRegistryEntry in tools/schemas.py):
+#   mac            REQUIRED — primary key.
+#   name_hint      Hostname/display name from controller.
+#   tier_override  TRUST | IOT | CAMERA | GUEST | UNKNOWN — wins over the heuristic classifier.
+#   owner          free text — operator name(s), e.g. "alex", "shared", "kid", "guest"
+#   location       "master bedroom" | "throughout house" | "garage" | etc.
+#   role           "primary phone" | "smart-home hub" | "kid's tablet" | etc.
+#   criticality    CRITICAL | HIGH | MEDIUM | LOW
+#   notes          Free text.
+
+# MAC convention for examples: real OUI prefix kept (educational — shows
+# operators that 60:64:05 = Lutron, ec:b5:fa = Philips Hue when they look it up
+# via OUI lookup tools), but the device-specific suffix is zeroed/synthetic.
+# Tests/test_example_macs.py enforces this convention.
+
+clients:
+  - mac: "60:64:05:00:00:01"
+    name_hint: "Lutron light controller"
+    tier_override: "IOT"
+    owner: "shared"
+    location: "throughout house"
+    role: "smart-home hub"
+    criticality: "MEDIUM"
+    notes: "Drives all Caseta dimmers — loss means wall switches stop responding to dimming/scenes."
+
+  - mac: "ec:b5:fa:00:00:02"
+    name_hint: "Philips Hue"
+    tier_override: "IOT"
+    owner: "shared"
+    location: "throughout house"
+    role: "smart-home bridge"
+    criticality: "LOW"
+    notes: "Hue bridge. Bulbs talk Zigbee, not Wi-Fi. Loss means app control stops; physical switches still work."

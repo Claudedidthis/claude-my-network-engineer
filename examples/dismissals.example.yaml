@@ -1,0 +1,45 @@
+# Dismissals — operator-confirmed suppressions of specific finding patterns.
+#
+# Copy this to config/dismissals.yaml (gitignored) and edit, OR populate it
+# interactively via `nye onboard` and dismiss-from-audit prompts.
+#
+# Each dismissal matches a finding by:
+#   • finding_code  — the agent's classification (e.g. WIFI_NO_ENCRYPTION)
+#   • match_field   — which field in the finding's evidence dict to check
+#   • match_key     — the value that field must equal (case-insensitive)
+#
+# When matched, the finding is suppressed and the operator's reason is
+# surfaced in any reporting (so the auditor's INFO line says "Guest-Voucher-Net is
+# correctly an open captive-portal SSID" rather than nothing).
+#
+# scope:        permanent | until-date | n-days
+# expires_at:   ISO timestamp (only used when scope == "until-date")
+
+dismissals:
+  # Example 1: open WiFi that is *intentionally* a captive-portal SSID.
+  # The auditor's WIFI_NO_ENCRYPTION finding has evidence: {"ssid": "Guest-Voucher-Net", ...}.
+  # This dismissal suppresses the CRITICAL whenever the SSID matches.
+  - finding_code: "WIFI_NO_ENCRYPTION"
+    match_field: "ssid"
+    match_key: "Guest-Voucher-Net"
+    reason: "Intentional open SSID — UniFi hotspot voucher portal gates access."
+    scope: "permanent"
+    created_by: "operator"
+
+  # Example 2a: a device that is supposed to be offline (auditor pipeline).
+  - finding_code: "DEVICE_OFFLINE_UNEXPECTED"
+    match_field: "name"
+    match_key: "Spare-Camera"
+    reason: "Backup unit, intentionally powered off."
+    scope: "permanent"
+    created_by: "operator"
+
+  # Example 2b: same device, monitor pipeline. The auditor and monitor emit
+  # different finding codes for the same condition, so a complete suppression
+  # needs both entries.
+  - finding_code: "DEVICE_OFFLINE"
+    match_field: "name"
+    match_key: "Spare-Camera"
+    reason: "Backup unit, intentionally powered off."
+    scope: "permanent"
+    created_by: "operator"

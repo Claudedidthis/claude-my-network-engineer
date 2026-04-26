@@ -1,0 +1,209 @@
+# Device-ecosystem probes — the longest section because it's where complexity
+# lives. The critical probe is the third-party-installed gateway one (David's
+# solar-Zigbee story). Most operators don't volunteer that detail until asked.
+
+probes:
+  - id: devices.approx_count
+    theme: devices
+    prompt: |
+      Roughly how many connected devices live on the network?
+      (Most people undercount by 2x — phones, watches, TVs, every smart
+      bulb, every camera, the printer nobody uses, the fridge the wife
+      bought five years ago.)
+    kind: integer
+    field_path: devices.approx_device_count
+    priority: 6
+    surfaces_concern: capacity_planning
+
+  - id: devices.platforms
+    theme: devices
+    prompt: |
+      What computing platforms dominate? (apple, windows, linux, android,
+      mixed — comma-separated)
+    kind: choice_multi
+    field_path: devices.primary_platforms
+    choices: [apple, windows, linux, android, mixed]
+    priority: 4
+    surfaces_concern: ecosystem_compat
+
+  - id: devices.smart_home_ecosystems
+    theme: devices
+    prompt: |
+      Which smart-home ecosystems are in use?
+      (homekit, google_home, alexa, smartthings, home_assistant, none —
+      comma-separated; multiple is normal)
+    kind: choice_multi
+    field_path: devices.smart_home_ecosystems
+    choices: [homekit, google_home, alexa, smartthings, home_assistant, none]
+    priority: 6
+    surfaces_concern: vlan_design
+    follow_ups:
+      - when: { contains: home_assistant }
+        ids: [usage.zigbee_device_count, devices.smart_lighting_protocols]
+
+  - id: devices.gaming
+    theme: devices
+    prompt: |
+      Gaming situation?
+      Choices:
+        none / casual_console / competitive (latency really matters) /
+        pc_gaming / mixed
+    kind: choice
+    field_path: devices.gaming
+    choices: [none, casual_console, competitive, pc_gaming, mixed]
+    priority: 5
+    surfaces_concern: latency_priority
+    notes: |
+      "competitive" should set QoS rules and prioritize gaming console
+      traffic; casual_console doesn't need that.
+
+  - id: devices.camera_architecture
+    theme: devices
+    prompt: |
+      Cameras — what's the architecture?
+      Choices:
+        none = no cameras
+        local_nvr = recorded locally (UniFi Protect, Synology Surveillance, etc.)
+        cloud = subscription-based (Ring, Nest, Wyze cloud)
+        hybrid
+    kind: choice
+    field_path: devices.camera_architecture
+    choices: [none, local_nvr, cloud, hybrid]
+    priority: 6
+    surfaces_concern: vlan_design
+    follow_ups:
+      - when: { in: [local_nvr, hybrid] }
+        ids: [devices.has_video_doorbell, infrastructure.poe_budget_w]
+
+  - id: devices.has_video_doorbell
+    theme: devices
+    prompt: |
+      Video doorbell? (yes/no — and if yes, brand if you remember)
+    kind: free_text
+    field_path: devices.has_video_doorbell
+    priority: 4
+    surfaces_concern: vlan_design
+
+  - id: devices.has_smart_locks
+    theme: devices
+    prompt: Smart locks anywhere? (front door, back door, garage)
+    kind: boolean
+    field_path: devices.has_smart_locks
+    priority: 3
+    surfaces_concern: criticality_classification
+
+  - id: devices.smart_lighting_protocols
+    theme: devices
+    prompt: |
+      Smart lighting — what protocols?
+      (zigbee / zwave / wifi / thread / matter / proprietary / none —
+      comma-separated; some setups use several)
+    kind: choice_multi
+    field_path: devices.smart_lighting_protocols
+    choices: [zigbee, zwave, wifi, thread, matter, proprietary, none]
+    priority: 4
+    surfaces_concern: rf_environment
+
+  - id: devices.smart_thermostat
+    theme: devices
+    prompt: Smart thermostat? (Nest, Ecobee, Honeywell, etc. — yes/no is fine)
+    kind: boolean
+    field_path: devices.smart_thermostat
+    priority: 3
+    surfaces_concern: vlan_design
+
+  - id: devices.has_solar
+    theme: devices
+    prompt: |
+      Do you have solar panels with any kind of internet-connected
+      monitoring? (this is where the third-party-IoT-on-your-network
+      problem usually starts)
+    kind: boolean
+    field_path: devices.has_solar
+    priority: 7
+    surfaces_concern: third_party_isolation
+    follow_ups:
+      - when: true
+        ids: [devices.solar_third_party_iot, security.third_party_devices_present]
+
+  - id: devices.solar_third_party_iot
+    theme: devices
+    prompt: |
+      Did the solar installer put their *own* gateway, hub, or Zigbee
+      bridge on your wifi to phone home for monitoring? (yes / no / unsure)
+      This is one of the most common reasons people end up needing a DMZ
+      or third-party-isolation VLAN.
+    kind: choice
+    field_path: devices.solar_third_party_iot
+    choices: [yes, no, unsure]
+    priority: 8
+    surfaces_concern: third_party_isolation
+    triggers_when:
+      devices.has_solar: true
+    notes: |
+      This probe explicitly surfaces what David called out as his canonical
+      origin story. The honest answer here drives whether the security
+      agent should propose a DMZ or third-party VLAN.
+
+  - id: devices.has_battery_storage
+    theme: devices
+    prompt: Battery storage system? (Tesla Powerwall, LG Chem, etc. — yes/no)
+    kind: boolean
+    field_path: devices.has_battery_storage
+    priority: 3
+    surfaces_concern: vlan_design
+
+  - id: devices.ev_charger
+    theme: devices
+    prompt: |
+      EV charger situation? (none / present / planned-within-year)
+    kind: choice
+    field_path: devices.ev_charger
+    choices: [none, present, planned]
+    priority: 3
+    surfaces_concern: vlan_design
+
+  - id: devices.has_nas
+    theme: devices
+    prompt: NAS or local storage server? (yes/no)
+    kind: boolean
+    field_path: devices.has_nas
+    priority: 4
+    surfaces_concern: backup_planning
+
+  - id: devices.has_printers
+    theme: devices
+    prompt: |
+      Printers? (the perennial network-isolation nightmare — yes/no)
+    kind: boolean
+    field_path: devices.has_printers
+    priority: 3
+    surfaces_concern: vlan_design
+
+  - id: devices.has_voip
+    theme: devices
+    prompt: VoIP phone or ATA adapter? (yes/no)
+    kind: boolean
+    field_path: devices.has_voip
+    priority: 2
+    surfaces_concern: vlan_design
+
+  - id: devices.has_baby_monitor
+    theme: devices
+    prompt: Baby monitor with wifi? (yes/no)
+    kind: boolean
+    field_path: devices.has_baby_monitor
+    priority: 3
+    surfaces_concern: criticality_classification
+
+  - id: devices.has_kid_devices
+    theme: devices
+    prompt: |
+      Devices specifically for the kids — tablets, kids' phones,
+      gaming handhelds — that benefit from parental controls?
+    kind: boolean
+    field_path: devices.has_kid_devices
+    priority: 3
+    surfaces_concern: parental_controls
+    triggers_when:
+      household.has_kids: true

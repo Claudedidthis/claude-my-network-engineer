@@ -1,0 +1,118 @@
+# Household composition probes — drives parental controls, accessibility,
+# guest networks, and the all-important "who can fix this at 11pm" question.
+
+probes:
+  - id: household.num_residents
+    theme: household
+    prompt: How many people live in the home full-time?
+    kind: integer
+    field_path: household.num_residents
+    priority: 7
+    surfaces_concern: capacity_planning
+
+  - id: household.age_bands
+    theme: household
+    prompt: |
+      What age bands are represented in the household?
+      (adult, teen, school-age, infant, senior — comma-separated; one entry
+      per person if you want, or just the bands present)
+    kind: choice_multi
+    field_path: household.age_bands
+    choices: [adult, teen, school_age, infant, senior]
+    priority: 7
+    surfaces_concern: parental_controls
+    follow_ups:
+      - when: { contains: school_age }
+        ids: [household.kids_savvy_with_workarounds, household.has_kids]
+      - when: { contains: teen }
+        ids: [household.kids_savvy_with_workarounds, household.has_kids]
+      - when: { contains: senior }
+        ids: [household.accessibility_needs]
+
+  - id: household.has_kids
+    theme: household
+    prompt: |
+      Are there kids in the household? (this changes a lot — guest
+      networks, content filtering, screen-time tools)
+    kind: boolean
+    field_path: household.has_kids
+    priority: 6
+    surfaces_concern: parental_controls
+
+  - id: household.kids_savvy_with_workarounds
+    theme: household
+    prompt: |
+      How tech-savvy are the kids? Specifically — old enough to find
+      workarounds (DNS over HTTPS, VPNs, hotspots) if they want to bypass
+      filters? (yes / no / not yet / not relevant)
+    kind: choice
+    field_path: household.kids_savvy_with_workarounds
+    choices: [yes, no, not_yet, not_relevant]
+    priority: 5
+    surfaces_concern: parental_controls
+    triggers_when:
+      household.has_kids: true
+    notes: |
+      A 13-year-old who knows what a VPN is needs a different parental-
+      control approach than a 7-year-old. The honest answer here changes
+      the recommendation between "DNS filter at the gateway" and "managed
+      device profiles + VLAN isolation".
+
+  - id: household.tech_literacy_levels
+    theme: household
+    prompt: |
+      Across the regular network users, what's the distribution of tech
+      literacy? (expert, comfortable, basic, novice — comma-separated;
+      one per person or just the levels present)
+    kind: choice_multi
+    field_path: household.tech_literacy_levels
+    choices: [expert, comfortable, basic, novice]
+    priority: 6
+    surfaces_concern: maintenance_design
+    notes: |
+      A network where one expert is propping up four novices needs very
+      different recovery affordances than a network where everyone can
+      reboot a switch. Drives whether to recommend self-healing
+      configurations vs. transparent-but-fragile setups.
+
+  - id: household.accessibility_needs
+    theme: household
+    prompt: |
+      Anyone with accessibility needs that depend on the network?
+      (e.g. medical alert devices, voice assistants used as accessibility
+      tech, screen readers needing local web servers — free text)
+    kind: free_text
+    field_path: household.accessibility_needs
+    priority: 5
+    surfaces_concern: criticality_classification
+
+  - id: household.medical_devices_on_network
+    theme: household
+    prompt: |
+      Anything medical connected to wifi or bluetooth-via-hub?
+      Examples that often surprise people:
+        - CGMs (continuous glucose monitors)
+        - CPAP machines that report to a cloud
+        - Cardiac monitors
+        - Smart pillboxes
+        - Fall-detection devices
+      (free text — "no" is also fine)
+    kind: free_text
+    field_path: household.medical_devices_on_network
+    priority: 6
+    surfaces_concern: criticality_classification
+    notes: |
+      Operators almost never volunteer this. A connected CGM that loses
+      wifi for an hour can mean a dangerous gap in glucose data. Worth
+      asking explicitly.
+
+  - id: household.guest_frequency
+    theme: household
+    prompt: |
+      How often do guests come over and need wifi?
+      (rarely / occasional / frequent / constant)
+    kind: choice
+    field_path: household.guest_frequency
+    choices: [rarely, occasional, frequent, constant]
+    priority: 4
+    surfaces_concern: vlan_design

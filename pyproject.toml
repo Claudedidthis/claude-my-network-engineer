@@ -1,0 +1,112 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "claude-my-network-engineer"
+version = "0.1.0"
+description = "An AI-powered network engineer for UniFi networks. Audits config, applies safe optimizations, and surfaces risky changes for human approval."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "David Vickers" }]
+keywords = ["unifi", "network", "ai", "claude", "anthropic", "automation", "monitoring"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Networking :: Monitoring",
+    "Topic :: System :: Systems Administration",
+]
+
+# Bare install pulls in zero deps — extras layer functionality.
+# Most users will install with at least [core].
+dependencies = []
+
+[project.optional-dependencies]
+core = [
+    "unifi-sm-api",
+    "httpx>=0.27",
+    "python-dotenv>=1.0",
+    "pyyaml>=6.0",
+    "pydantic>=2.6",
+    "rich>=13.0",
+    "tenacity>=8.0",
+]
+ai = [
+    "anthropic>=0.40",
+]
+cloud = [
+    "supabase>=2.0",
+    "boto3>=1.34",
+]
+server = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "apscheduler>=3.10",
+    "websockets>=12.0",
+]
+notifications = [
+    "aioapns>=3.2",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "mypy>=1.8",
+    "black>=24.0",
+]
+
+[project.scripts]
+nye = "network_engineer.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Claudedidthis/claude-my-network-engineer"
+Repository = "https://github.com/Claudedidthis/claude-my-network-engineer"
+Issues = "https://github.com/Claudedidthis/claude-my-network-engineer/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/network_engineer"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "N", "S", "RUF"]
+ignore = [
+    "S101",  # assert-used — fine in tests
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S"]
+"src/network_engineer/cli.py" = ["S603", "S607"]
+# Schemas use trailing comments to enumerate enum-like values for human readers.
+# These exceed 100 chars but are documentation, not real overlength.
+"src/network_engineer/tools/schemas.py" = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["network_engineer"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = true
+mypy_path = "src"
+explicit_package_bases = true
+namespace_packages = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+pythonpath = ["src"]
+addopts = "-ra -q"
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
