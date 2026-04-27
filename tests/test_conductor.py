@@ -22,8 +22,8 @@ from network_engineer.agents.conductor_llm import (
     _VIRTUAL_TOOLS,
 )
 from network_engineer.agents.conductor_tools import (
-    _stub_cite_corpus,
-    _stub_evaluate_against_corpus,
+    _cite_corpus,
+    _evaluate_against_corpus,
     build_conductor_tools,
 )
 from network_engineer.tools.agent_loop import (
@@ -282,16 +282,32 @@ def test_messages_end_on_user_role() -> None:
 # ── conductor_tools: tool registry ──────────────────────────────────────────
 
 
-def test_corpus_tools_are_stubbed() -> None:
-    eval_result = _stub_evaluate_against_corpus(
-        action="open_port_22_wan",
-        current_state={},
+def test_corpus_tools_query_real_corpus() -> None:
+    """The corpus tools now hit tools/corpus.py. With the v0.1 starter
+    bundle landed (8 authored summaries), querying "ssh wan" should
+    return red-005-ssh-telnet-wan-exposed with RED severity."""
+    eval_result = _evaluate_against_corpus(
+        action="port_forward",
+        current_state={"port": 22, "destination": "WAN"},
     )
-    assert eval_result["corpus_loaded"] is False
-    assert eval_result["severity"] is None
+    assert eval_result["corpus_loaded"] is True
+    # Best match should be the SSH-on-WAN summary
+    assert "ssh" in eval_result["canonical_source"].lower()
+    assert eval_result["severity"] == "RED"
 
-    cite_result = _stub_cite_corpus(source_id="red-005-ssh-telnet-wan-exposed")
-    assert cite_result["corpus_loaded"] is False
+
+def test_cite_corpus_returns_full_text() -> None:
+    cite_result = _cite_corpus(source_id="red-005-ssh-telnet-wan-exposed")
+    assert cite_result["corpus_loaded"] is True
+    assert cite_result["source_id"] == "red-005-ssh-telnet-wan-exposed"
+    assert "WAN" in cite_result["full_text"]
+
+
+def test_cite_corpus_unknown_source_id_returns_message() -> None:
+    cite_result = _cite_corpus(source_id="nonexistent-source-id")
+    assert cite_result["corpus_loaded"] is True
+    assert cite_result["source_id"] == "nonexistent-source-id"
+    assert "No corpus entry found" in cite_result["excerpt"]
 
 
 def test_build_conductor_tools_includes_corpus_stubs(tmp_path: Path) -> None:

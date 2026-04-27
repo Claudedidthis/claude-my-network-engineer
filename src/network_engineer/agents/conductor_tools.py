@@ -44,40 +44,114 @@ from network_engineer.tools.durable_memory import (
 )
 
 
-# ── Stub-only functions (real impls land in #51 / step 5+) ─────────────────
+# ── Corpus retrieval (real, backed by tools/corpus.py) ─────────────────────
 
 
-def _stub_evaluate_against_corpus(
+def _evaluate_against_corpus(
     *, action: str, current_state: dict, household_profile: dict | None = None,
 ) -> dict[str, Any]:
-    """STUB — real implementation in task #51 (Layer 0 corpus retrieval).
+    """Search the corpus for canonical guidance on a proposed action.
 
-    Returns a structured "corpus not loaded" response so the Conductor's
-    system prompt can recognize the no-corpus state and avoid invoking
-    counsel-against without canonical citations.
+    Returns the highest-relevance authored summary (preferring severity-
+    banded entries) plus its severity, source citation, and counsel text
+    excerpt. The Conductor uses this output to decide whether to invoke
+    counsel-against (severity != null) and what to cite.
+
+    When the corpus is empty (no authored summaries / no bundled docs),
+    returns corpus_loaded=false. The system prompt teaches the Conductor
+    to handle that case by expressing concern verbally without recording
+    a caution marker.
     """
+    from network_engineer.tools import corpus
+
+    if not corpus.is_loaded():
+        return {
+            "corpus_loaded": False,
+            "severity": None,
+            "canonical_source": None,
+            "counsel_text": (
+                "Corpus is empty. Cannot evaluate this action against "
+                "canonical sources. Express concern in conversation if "
+                "appropriate but do NOT call record_caution_marker."
+            ),
+        }
+
+    # Build the search query from action + current_state + (optional) profile.
+    # Prioritize the action keyword and any specific service/port the state mentions.
+    query_parts = [action]
+    if isinstance(current_state, dict):
+        for key, value in current_state.items():
+            query_parts.append(str(key))
+            if isinstance(value, (str, int)):
+                query_parts.append(str(value))
+    query = " ".join(query_parts)
+
+    candidates = corpus.query(query, top_k=5)
+    if not candidates:
+        return {
+            "corpus_loaded": True,
+            "severity": None,
+            "canonical_source": None,
+            "counsel_text": (
+                "No corpus entry matched this action. Express concern "
+                "in conversation if appropriate but do NOT call "
+                "record_caution_marker without a canonical citation."
+            ),
+        }
+
+    # Prefer the highest-severity match (RED beats AMBER beats unbanded)
+    severity_priority = {"RED": 3, "AMBER": 2, "INFO": 1, None: 0}
+    best = max(
+        candidates,
+        key=lambda c: (severity_priority.get(c.severity_band, 0), c.relevance_score),
+    )
+
     return {
-        "corpus_loaded": False,
-        "severity": None,
-        "canonical_source": None,
-        "counsel_text": (
-            "Corpus is not loaded yet (task #51 pending). Cannot evaluate "
-            "this action against canonical sources. Express concern in "
-            "conversation if appropriate but do NOT call record_caution_marker."
-        ),
+        "corpus_loaded": True,
+        "severity": best.severity_band,
+        "canonical_source": best.source_id,
+        "title": best.title,
+        "counsel_text": best.excerpt_preview,
+        "category": best.category,
+        "all_candidates": [
+            {
+                "source_id": c.source_id,
+                "title": c.title,
+                "severity_band": c.severity_band,
+                "relevance_score": c.relevance_score,
+            }
+            for c in candidates
+        ],
     }
 
 
-def _stub_cite_corpus(*, source_id: str) -> dict[str, Any]:
-    return {
-        "corpus_loaded": False,
-        "source_id": source_id,
-        "title": None,
-        "excerpt": (
-            "Corpus is not loaded yet (task #51 pending). The cite_corpus "
-            "tool will return real excerpts once the bundle is built."
-        ),
-    }
+def _cite_corpus(*, source_id: str) -> dict[str, Any]:
+    """Retrieve the full excerpt for a specific source_id."""
+    from network_engineer.tools import corpus
+
+    if not corpus.is_loaded():
+        return {
+            "corpus_loaded": False,
+            "source_id": source_id,
+            "title": None,
+            "excerpt": "Corpus is empty.",
+        }
+    excerpt = corpus.cite_by_id(source_id)
+    if excerpt is None:
+        return {
+            "corpus_loaded": True,
+            "source_id": source_id,
+            "title": None,
+            "excerpt": (
+                f"No corpus entry found for source_id={source_id!r}. "
+                "Available source_ids can be listed via list_red_codes() / "
+                "list_amber_codes() or by querying."
+            ),
+        }
+    out = excerpt.model_dump(mode="json")
+    out["corpus_loaded"] = True
+    out["excerpt"] = excerpt.full_text  # alias for "give me the prose"
+    return out
 
 
 # ── Tool builders — each returns a ToolSpec keyed by the tool name ──────────
@@ -381,14 +455,14 @@ def build_conductor_tools(
     tools["evaluate_against_corpus"] = ToolSpec(
         name="evaluate_against_corpus",
         description=(
-            "Evaluate a proposed action against canonical sources. Returns "
-            "severity (RED/AMBER/null), canonical_source citation, counsel "
-            "text. STUB until task #51 (Layer 0 corpus) lands; currently "
-            "returns corpus_loaded=false. The Conductor must handle the "
-            "no-corpus case gracefully — express concern but do NOT call "
-            "record_caution_marker."
+            "Evaluate a proposed action against canonical sources from the "
+            "Layer 0 corpus. Returns severity (RED/AMBER/null), "
+            "canonical_source citation, counsel_text excerpt, and a list "
+            "of all relevant candidate sources. When corpus_loaded=false "
+            "or no matching entry, the Conductor must NOT call "
+            "record_caution_marker — express concern verbally only."
         ),
-        fn=_stub_evaluate_against_corpus,
+        fn=_evaluate_against_corpus,
         schema={
             "type": "object",
             "properties": {
@@ -403,11 +477,13 @@ def build_conductor_tools(
     tools["cite_corpus"] = ToolSpec(
         name="cite_corpus",
         description=(
-            "Retrieve a specific corpus excerpt by source_id (e.g. "
-            "'red-005-ssh-telnet-wan-exposed', 'rfc-1918'). STUB until "
-            "task #51 lands."
+            "Retrieve the full excerpt for a specific corpus source_id "
+            "(e.g. 'red-005-ssh-telnet-wan-exposed', 'foundation-001-home-"
+            "vs-corporate'). Use after evaluate_against_corpus identifies "
+            "the relevant source — cite_corpus returns the full text the "
+            "Conductor can quote in conversation."
         ),
-        fn=_stub_cite_corpus,
+        fn=_cite_corpus,
         schema={
             "type": "object",
             "properties": {"source_id": {"type": "string"}},

@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "bundle_version": "0.1.0",
+  "bundled_at": "2026-04-27",
+  "default_license": "MIT",
+  "summary": "Layer 0 corpus for ClaudeMyNetworkEngineer. v0.1 starter bundle: authored summaries covering high-leverage RED + AMBER cases, plus foundational framing. Canonical source documents (NIST/RFC/CIS) are referenced by URL in v0.1; full bundling per docs/corpus_curation.md grows in subsequent releases.",
+  "categories": {
+    "authored": {
+      "license": "MIT",
+      "owner": "this project",
+      "description": "Original summaries distilling canonical guidance with explicit URL pointers to authoritative sources."
+    },
+    "nist": {
+      "license": "Public domain (US Government work, 17 U.S.C. § 105)",
+      "description": "NIST publications. Bundled as full text in subsequent releases; v0.1 references by URL only."
+    },
+    "ietf": {
+      "license": "BCP 78 / RFC 5378 (public, freely redistributable)",
+      "description": "IETF RFCs. Bundled as full text in subsequent releases; v0.1 references by URL only."
+    },
+    "cis": {
+      "license": "CC BY-NC-SA 4.0",
+      "constraint": "NonCommercial — project distribution must remain non-commercial to bundle CIS content. See README §Corpus and licensing.",
+      "description": "CIS Controls v8 + selected Benchmarks. Bundled as full text in subsequent releases; v0.1 references by URL only."
+    }
+  },
+  "starter_set_count": 8,
+  "growth_plan": "Top 15-20 highest-leverage cases per docs/corpus_curation.md §8 sign-off (b). Subsequent additions arrive as the project encounters real operator situations that warrant new summaries."
+}

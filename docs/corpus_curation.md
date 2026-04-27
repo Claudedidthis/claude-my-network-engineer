@@ -300,21 +300,18 @@ Explicitly listed so we don't pretend otherwise:
 
 ---
 
-## 8. Sign-off questions for the operator
+## 8. Sign-off — DECIDED 2026-04-27
 
-Before any corpus content lands, decide:
+All five questions resolved by the operator:
 
-1. **CIS NonCommercial constraint** — do we accept it for v1? Implication: if the project ever takes a commercial path (paid SaaS hosting, etc.), the CIS portion needs removal. My lean: accept for v1, document the constraint, revisit if commercial path emerges.
+1. **CIS NonCommercial constraint** — **ACCEPTED for v1**. Documented in the project README's "Corpus and licensing" section. Constraint will be revisited if a commercial path emerges.
 
-2. **Authored summaries as primary citation source** — comfortable that the agent cites *our* authored summary that paraphrases the proprietary source, rather than the proprietary source directly? My lean: yes — this is honest, legally clean, and the operator can always verify against the URL.
+2. **Authored summaries as primary citation source** — **YES**. The agent cites our paraphrased summaries with explicit URL pointers to the original proprietary source so the operator can verify.
 
-3. **Bundle size budget** — ~15-25 MB compressed in the wheel. Acceptable, or do we need the corpus to be a separate downloadable artifact (e.g. `pip install network-engineer[corpus]`)? My lean: bundle in the main wheel for first-run guarantee. Operators with bandwidth concerns can be addressed in a future release with the optional-extra pattern.
+3. **Bundle size budget ~15-25 MB** — **YES**, bundle in main wheel for first-run guarantee.
 
-4. **Authored summary count** — ~50 summaries for the initial RED/AMBER + foundational coverage. That's a substantial writing effort (probably 30-50 hours of focused work to write properly). Two options:
-   - (a) **All 50 in one pass** before the Conductor lands. Slower start; more comprehensive day-one citations.
-   - (b) **Top 15-20 highest-leverage cases** for v1; the rest as the project encounters real operator situations that warrant new summaries. Faster start; the corpus grows organically with operator demand.
-   My lean: (b). The Conductor can fall back to citing NIST/RFC/CIS directly when an authored summary doesn't yet exist for a specific case.
+4. **Authored summary count** — **(b) top 15-20 highest-leverage cases for v1**, growing organically as the project encounters real operator situations that warrant new summaries. The Conductor falls back to citing NIST/RFC/CIS/vendor sources directly when an authored summary doesn't yet exist for a specific case.
 
-5. **CCNA/CompTIA paraphrasing legality** — the authored summaries draw on canonical networking knowledge that ultimately comes from textbooks and courses. Where the summary distills "what every CCNA-trained engineer knows" without copying specific text, this is fact, not protected expression. I want explicit acknowledgment that this posture is what we're taking, and that we're prepared to revise if a specific summary draws too closely from a copyrighted source.
+5. **CCNA/CompTIA paraphrasing legality** — **YES**, paraphrase is the posture. CCNA-level networking knowledge is the canonical home-network reference; the project distills "what every CCNA-trained engineer knows" as fact, not protected expression. We commit to revising any specific summary that draws too closely from a copyrighted source.
 
-Once these five are answered, task #51 (corpus build) can begin.
+Task #51 (corpus build) is now unblocked.

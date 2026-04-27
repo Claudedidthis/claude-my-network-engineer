@@ -102,11 +102,27 @@ The probe library, identification tips, OUI database, upgrade catalog, and Layer
 
 ## License
 
-MIT. See [`LICENSE`](LICENSE).
+MIT for the project's own code and authored content. See [`LICENSE`](LICENSE).
+
+## Corpus and licensing
+
+The Conductor's authority to invoke counsel-against (the "you're about to do something I'd warn you about — here's what NIST/CIS/CCNA say") depends on a bundled Layer 0 corpus of canonical guidance. The corpus is in `data/corpus/` and ships with the package. It contains content from several licenses:
+
+- **Authored summaries** (`data/corpus/authored/`) — original content this project owns. Released under the project's MIT license.
+- **NIST publications** (`data/corpus/nist/`) — US Government work, public domain (17 U.S.C. § 105). Bundled freely.
+- **IETF RFCs** (`data/corpus/ietf/`) — BCP 78 / RFC 5378. Freely redistributable.
+- **CIS Controls v8 + selected CIS Benchmarks** (`data/corpus/cis/`) — **CC BY-NC-SA 4.0**. The NonCommercial clause means this project's distribution must remain non-commercial to bundle CIS content. If the project ever adopts a commercial path (paid SaaS hosting, enterprise license, etc.), the CIS portion must be removed from that distribution. The current MIT-licensed open-source non-commercial distribution is compatible.
+
+**Vendor documentation** (UniFi, Cisco, Lutron, Hue, Sonos, Apple HomeKit, etc.) and **proprietary networking curriculum** (CCNA, Network+, etc.) are **not bundled**. The Conductor cites them by name and URL; operators verify against the original source. See [`docs/corpus_curation.md`](docs/corpus_curation.md) for the full policy.
+
+The v0.1 starter bundle ships with 8 authored summaries covering the highest-leverage RED + AMBER + foundational cases. Subsequent releases grow the bundle organically (per `docs/corpus_curation.md` §8 sign-off (b)).
 
 ## Further reading
 
+- [`docs/agent_architecture.md`](docs/agent_architecture.md) — the Conductor + tools + memory contract (the project's defining document)
 - [`docs/architecture.md`](docs/architecture.md) — full architectural map (~1000 lines, structured for audit)
+- [`docs/corpus_curation.md`](docs/corpus_curation.md) — Layer 0 corpus policy + bundled set
 - [`docs/handoff_envelope_design.md`](docs/handoff_envelope_design.md) — schema rationale + research citations + LLM-calibration pushback
 - [`docs/build-plan.md`](docs/build-plan.md) — the 16-phase build sequence
+- [`docs/leak_detector.md`](docs/leak_detector.md) — pre-push leak gate that runs on every public git push
 - [`docs/research/prior-art.md`](docs/research/prior-art.md) — landscape evaluation
