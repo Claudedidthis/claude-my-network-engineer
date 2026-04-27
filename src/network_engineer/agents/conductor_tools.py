@@ -612,15 +612,55 @@ def _save_dismissal(
     }
 
 
+_CAUTION_FIELDS_THE_LLM_MAY_SET = frozenset({
+    "severity",
+    "origin",
+    "target_kind",
+    "target_key",
+    "canonical_source",
+    "counsel_text",
+    "operator_rationale",
+    "finding_id",
+})
+
+
 def _record_caution(
     durable_memory: DurableMemory,
     session_id: str,
     **kwargs: Any,
 ) -> dict[str, Any]:
-    """Construct a CautionMarker and persist it."""
+    """Construct a CautionMarker and persist it.
+
+    Whitelists the LLM's input to the fields it should be able to set.
+    Per code-review 2026-04-27: passing **kwargs straight through let
+    the LLM set state="resolved" / acknowledged_at / resolved_at — which
+    bypasses the operator-acknowledge / system-resolution asymmetry the
+    architecture (§3.4) explicitly enforces. New markers always start
+    state="active" with no transition timestamps; transitions go through
+    acknowledge_caution / resolve_caution which run state-machine
+    invariants.
+    """
+    safe_kwargs = {
+        k: v for k, v in kwargs.items()
+        if k in _CAUTION_FIELDS_THE_LLM_MAY_SET
+    }
+    rejected = set(kwargs.keys()) - _CAUTION_FIELDS_THE_LLM_MAY_SET
+    if rejected:
+        # Surface in the agent's tool_observation rather than silently
+        # dropping — the model can correct on the next turn.
+        return {
+            "error": "caution_marker_rejected_fields",
+            "rejected_fields": sorted(rejected),
+            "message": (
+                f"record_caution_marker does not accept fields {sorted(rejected)!r}. "
+                "State transitions go through acknowledge_caution (operator) or "
+                "recheck_caution_resolution (system). Re-call with allowed fields only."
+            ),
+        }
     marker = CautionMarker(
         counseled_in_session=session_id,
-        **kwargs,
+        state="active",  # all new markers start active
+        **safe_kwargs,
     )
     durable_memory.record_caution_marker(marker)
     return marker.model_dump(mode="json")

@@ -331,6 +331,118 @@ def test_tool_use_correlates_with_tool_result_on_next_call() -> None:
     assert "5 findings" in tool_result_blocks[0]["content"]
 
 
+def test_two_tool_uses_in_one_response_correlate_via_fifo_queue() -> None:
+    """REGRESSION (caught by code-review 2026-04-27): when the model emits
+    multiple real tool_uses in one response, EACH must correlate with its
+    matching tool_observation by tool_use_id. The single-slot
+    _pending_tool_use_id design dropped the second correlation, recreating
+    the runaway-tool-call bug (read_snapshot 13 times). FIFO queue fix."""
+    class _SequencedMessages:
+        def __init__(self, responses):
+            self.responses = list(responses)
+            self.calls = 0
+            self.last_kwargs = None
+
+        def create(self, **kwargs):
+            self.last_kwargs = kwargs
+            r = self.responses[min(self.calls, len(self.responses) - 1)]
+            self.calls += 1
+            return r
+
+    # First response: TWO real tool_uses (audit_network + identify_smart_home_brands)
+    seq = _SequencedMessages([
+        _FakeMessage([
+            _FakeBlock(type="tool_use", name="audit_network", id="toolu_audit_1", input={}),
+            _FakeBlock(type="tool_use", name="identify_smart_home_brands", id="toolu_brands_1", input={}),
+        ]),
+        _FakeMessage([
+            _FakeBlock(type="tool_use", name="done_for_now", input={}),
+        ]),
+    ])
+    fake_anthropic = type("X", (), {"messages": seq})()
+    from network_engineer.agents.ai_runtime import AIRuntime
+    runtime = AIRuntime(enabled=True, client=fake_anthropic)
+    llm = AIRuntimeAgentLLM(runtime)
+
+    # First decide(): returns the first CallToolDecision; the second is queued.
+    d1 = llm.decide(
+        system_prompt="(test)", working_memory=[],
+        session_summary="", durable_subset="", tools={},
+    )
+    assert isinstance(d1, CallToolDecision)
+    assert d1.tool == "audit_network"
+
+    # Second decide(): drains the queue without an API call — second tool.
+    d2 = llm.decide(
+        system_prompt="(test)", working_memory=[],
+        session_summary="", durable_subset="", tools={},
+    )
+    assert isinstance(d2, CallToolDecision)
+    assert d2.tool == "identify_smart_home_brands"
+
+    # The loop now runs both tools in sequence; observations land in working
+    # memory in tool-call order.
+    wm_after_both = [
+        Turn(role="tool_observation", content="audit_network(...) → 5 findings"),
+        Turn(role="tool_observation", content="identify_smart_home_brands(...) → ['lutron']"),
+    ]
+    # Third decide(): triggers a real API call. Both tool_results must be
+    # in the messages, each correlated with its respective tool_use_id.
+    d3 = llm.decide(
+        system_prompt="(test)", working_memory=wm_after_both,
+        session_summary="", durable_subset="", tools={},
+    )
+    assert isinstance(d3, DoneDecision)
+
+    # Inspect the messages sent on the second API call (calls=1 was the first;
+    # calls=2 is this one's reply).
+    msgs = seq.last_kwargs["messages"]
+    tool_results = []
+    for m in msgs:
+        if m["role"] != "user":
+            continue
+        content = m["content"]
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    tool_results.append(block)
+
+    assert len(tool_results) == 2, (
+        f"expected 2 tool_result blocks (one per tool_use), got {len(tool_results)}"
+    )
+    # FIFO ordering: first tool_use_id pairs with first tool_observation
+    assert tool_results[0]["tool_use_id"] == "toolu_audit_1"
+    assert "5 findings" in tool_results[0]["content"]
+    assert tool_results[1]["tool_use_id"] == "toolu_brands_1"
+    assert "lutron" in tool_results[1]["content"]
+
+
+def test_api_messages_are_capped_at_max() -> None:
+    """REGRESSION (caught by code-review 2026-04-27): _api_messages was
+    unbounded. Long sessions would blow the model's context window. The
+    buffer is now capped; the oldest non-anchor pair is dropped when
+    over the limit."""
+    runtime = _make_runtime([
+        _FakeBlock(type="tool_use", name="speak", input={"text": "ack"}),
+    ])
+    llm = AIRuntimeAgentLLM(runtime)
+    # Force-fill _api_messages well past the cap
+    llm._api_messages = [{"role": "user", "content": "anchor"}]
+    for i in range(120):
+        role = "user" if i % 2 == 0 else "assistant"
+        llm._api_messages.append({"role": role, "content": f"turn-{i}"})
+
+    llm._enforce_message_cap()
+
+    # Should be at-or-under the cap
+    assert len(llm._api_messages) <= AIRuntimeAgentLLM._MAX_API_MESSAGES
+    # The anchor (first message) must be preserved
+    assert llm._api_messages[0]["content"] == "anchor"
+    # New conversation start must be a user-role message (Anthropic invariant)
+    if len(llm._api_messages) > 1:
+        assert llm._api_messages[1]["role"] == "user"
+
+
 def test_multi_block_response_emits_speak_then_call_tool() -> None:
     """When the model emits [text + tool_use] in one response, the loop
     should see a SpeakDecision FIRST (so the operator hears the
@@ -358,6 +470,56 @@ def test_multi_block_response_emits_speak_then_call_tool() -> None:
 
 
 # ── conductor_tools: tool registry ──────────────────────────────────────────
+
+
+def test_record_caution_rejects_state_transition_fields(tmp_path: Path) -> None:
+    """REGRESSION (caught by code-review 2026-04-27): _record_caution
+    accepted **kwargs unfiltered, letting the LLM set state="resolved"
+    and acknowledged_at directly. That bypasses the architecture §3.4
+    asymmetry where only operator-acknowledge or system-resolution can
+    transition a marker."""
+    from network_engineer.agents.conductor_tools import _record_caution
+    from network_engineer.tools.durable_memory import DurableMemory
+
+    durable = DurableMemory(runs_dir=tmp_path / "runs", session_id="s")
+
+    # LLM tries to inject a state transition into the new-marker call
+    result = _record_caution(
+        durable, "s",
+        severity="RED", origin="audit_finding",
+        target_kind="port_forward", target_key="x",
+        canonical_source="src", counsel_text="t",
+        state="resolved",  # ← injection attempt
+        acknowledged_at="2026-04-26T00:00:00",  # ← injection attempt
+    )
+
+    # Should return the rejection error, not write a marker
+    assert "error" in result
+    assert "rejected_fields" in result
+    assert "state" in result["rejected_fields"]
+    assert "acknowledged_at" in result["rejected_fields"]
+    # No marker should have been recorded
+    assert durable.list_cautions() == []
+
+
+def test_record_caution_with_whitelisted_fields_succeeds(tmp_path: Path) -> None:
+    """Sanity: the happy-path with allowed fields still works."""
+    from network_engineer.agents.conductor_tools import _record_caution
+    from network_engineer.tools.durable_memory import DurableMemory
+
+    durable = DurableMemory(runs_dir=tmp_path / "runs", session_id="s")
+    result = _record_caution(
+        durable, "s",
+        severity="RED", origin="operator_override",
+        target_kind="port_forward", target_key="ssh-22",
+        canonical_source="NIST 800-53 SC-7",
+        counsel_text="SSH on WAN is high severity per NIST.",
+        operator_rationale="weekend access for vendor",
+    )
+    assert "error" not in result
+    assert result["state"] == "active"  # always starts active
+    assert result["severity"] == "RED"
+    assert len(durable.list_cautions()) == 1
 
 
 def test_corpus_tools_query_real_corpus() -> None:

@@ -167,15 +167,29 @@ _VIRTUAL_TOOL_NAMES = {t["name"] for t in _VIRTUAL_TOOLS}
 class AIRuntimeAgentLLM:
     """Stateful Anthropic-conversation adapter satisfying AgentLLM Protocol.
 
-    Two pieces of mutable state across decide() calls within one session:
-      _api_messages       Anthropic-shaped conversation history.
-      _pending_tool_use_id The model's most recent tool_use_id, used to
-                           correlate the next tool_result block.
+    State across decide() calls within one session:
+      _api_messages           Anthropic-shaped conversation history.
+      _pending_tool_use_ids   FIFO queue of tool_use_ids from the model
+                              awaiting matching tool_result blocks. Per
+                              code-review 2026-04-27: the previous
+                              single-slot design dropped correlation when
+                              the model emitted multiple tool_uses in one
+                              response, recreating the runaway-tool bug.
+      _decision_queue         Multi-block responses (text + tool_use)
+                              produce multiple decisions; the loop drains
+                              them one per call.
+      _processed_turn_count   Working-memory delta tracker.
 
-    Plus a _decision_queue for multi-decision responses (text + tool_use
-    in one model output emit two decisions: a SpeakDecision then a
-    CallToolDecision).
+    Memory-bound invariant: _api_messages is capped at _MAX_API_MESSAGES
+    entries; once exceeded, the oldest non-bootstrap pair is dropped.
+    Long sessions don't blow the model's context window.
     """
+
+    # Soft cap on the conversation buffer. Each pair is one user + one
+    # assistant message; ~50 pairs at average 1KB each is ~100KB which
+    # fits comfortably under any current model's context window plus
+    # leaves room for the system prompt + durable subset.
+    _MAX_API_MESSAGES = 100
 
     def __init__(
         self,
@@ -191,9 +205,10 @@ class AIRuntimeAgentLLM:
 
         # Anthropic-shaped conversation. Each entry: {"role": ..., "content": ...}
         self._api_messages: list[dict[str, Any]] = []
-        # Most recent tool_use_id from the model — paired with the next
-        # tool_observation we see in working memory.
-        self._pending_tool_use_id: str | None = None
+        # FIFO queue of tool_use_ids awaiting tool_result correlation.
+        # Each real tool_use in a response pushes onto the back; each
+        # tool_observation pops from the front.
+        self._pending_tool_use_ids: list[str] = []
         # Decisions extracted from a multi-block response, queued for the
         # loop to consume one at a time.
         self._decision_queue: list[AgentDecision] = []
@@ -319,22 +334,57 @@ class AIRuntimeAgentLLM:
             )
             return DoneDecision(reason="LLM returned no actionable content")
 
-        # Capture the FIRST tool_use_id (if any) for correlation with the
-        # next tool_observation. If multiple tool_uses are present we only
-        # correlate the first — multi-tool responses in one assistant turn
-        # are rare and the queue handles ordering.
+        # Capture EVERY real tool_use_id (in document order) for FIFO
+        # correlation with subsequent tool_observation turns. The queue
+        # design handles the multi-tool-use-in-one-response case the
+        # single-slot version would silently drop.
         for block in message.content:
             if getattr(block, "type", None) == "tool_use":
-                # Skip virtual tools that don't produce tool_results — only
-                # real tools need correlation.
+                # Virtual tools (speak/ask/save/log/done) don't produce
+                # tool_results — only real tools need correlation.
                 if getattr(block, "name", "") not in _VIRTUAL_TOOL_NAMES:
-                    self._pending_tool_use_id = getattr(block, "id", None)
-                    break
+                    use_id = getattr(block, "id", None)
+                    if use_id:
+                        self._pending_tool_use_ids.append(use_id)
+
+        # Trim the conversation buffer if it's grown past the cap.
+        self._enforce_message_cap()
 
         # First decision goes back immediately; the rest queue.
         first, *rest = decisions
         self._decision_queue.extend(rest)
         return first
+
+    def _enforce_message_cap(self) -> None:
+        """Trim the api_messages buffer when it grows past the cap.
+
+        Per code-review 2026-04-27: the buffer was unbounded, which would
+        eventually overflow the model's context window in long sessions.
+        When over the cap, drop the oldest user/assistant pair from the
+        front. The first message is preserved as a coarse "session
+        opener" anchor.
+        """
+        if len(self._api_messages) <= self._MAX_API_MESSAGES:
+            return
+        # Always keep the first message (bootstrap or first operator turn)
+        # as session-opener context. Drop the next-oldest pair.
+        # If the very-second message is assistant, drop the assistant first
+        # then the user to keep parity.
+        excess = len(self._api_messages) - self._MAX_API_MESSAGES
+        # Drop pairs (2 messages) until under the cap, starting after index 0.
+        head = self._api_messages[:1]
+        rest = self._api_messages[1:]
+        # Skip-by-2 pattern from the front of `rest` until under cap.
+        drop_count = excess
+        # Round up to even so we don't leave a dangling assistant-first.
+        if drop_count % 2 == 1:
+            drop_count += 1
+        rest = rest[drop_count:]
+        # Re-anchor: ensure the new conversation still starts with a
+        # user-role message after the head.
+        while rest and rest[0]["role"] != "user":
+            rest = rest[1:]
+        self._api_messages = head + rest
 
     # ── Internals ────────────────────────────────────────────────────────
 
@@ -354,19 +404,24 @@ class AIRuntimeAgentLLM:
                     "content": turn.content,
                 })
             elif turn.role == "tool_observation":
-                # Correlate with most recent pending tool_use_id.
-                if self._pending_tool_use_id is not None:
+                # Pop the oldest pending tool_use_id (FIFO) so multi-tool-use
+                # responses correlate correctly. Without this, the second
+                # tool's observation falls to the synthesize-as-text path
+                # and the model retries — same shape as the runaway-snapshot
+                # bug.
+                if self._pending_tool_use_ids:
+                    use_id = self._pending_tool_use_ids.pop(0)
                     self._api_messages.append({
                         "role": "user",
                         "content": [{
                             "type": "tool_result",
-                            "tool_use_id": self._pending_tool_use_id,
-                            "content": turn.content[:4000],  # bound size
+                            "tool_use_id": use_id,
+                            "content": turn.content[:8000],
                         }],
                     })
-                    self._pending_tool_use_id = None
                 else:
-                    # Synthesize as plain text — degraded but better than nothing.
+                    # No pending id — synthesize as plain text. Degraded
+                    # but better than crashing.
                     self._api_messages.append({
                         "role": "user",
                         "content": f"[tool_observation] {turn.content}",
