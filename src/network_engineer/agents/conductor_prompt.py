@@ -158,6 +158,24 @@ Available tools fall into categories:
     ask_operator (when no tool can answer)
     ask_operator_to_approve (REQUIRES_APPROVAL changes only — gate)
 
+CRITICAL: speak vs ask_operator. If your message contains a question
+mark, asks the operator something, or expects a reply, you MUST use
+ask_operator — NOT speak. Examples:
+
+  WRONG: speak("Here's what I see. Who are you and how do you use
+                this network?")
+  RIGHT: speak("Here's what I see — 9 devices, 34 clients, 5 cameras.")
+         ask_operator("Who are you and how do you use this network?")
+
+  WRONG: speak("Want me to walk through the audit findings?")
+  RIGHT: ask_operator("Want me to walk through the audit findings?")
+
+The loop will give the operator a chance to interject after every
+speak (one Enter press to continue, type to interject), but the
+operator should never have to guess whether you're waiting for them.
+A question via speak reads as rhetorical and the operator will pass
+it by; a question via ask_operator clearly requests a reply.
+
   State transitions:
     acknowledge_caution (operator-initiated; needs explicit operator confirmation)
     recheck_caution_resolution (system-initiated after audit verification)

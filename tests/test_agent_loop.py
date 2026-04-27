@@ -128,6 +128,36 @@ def test_speak_decision_emits_text_and_records_assistant_turn() -> None:
     assert any(t.role == "assistant" and t.content == "Hello operator" for t in second_wm)
 
 
+def test_speak_decision_allows_operator_interjection() -> None:
+    """When the operator types something after a speak (rather than just
+    hitting Enter), the typed input becomes a user turn the LLM sees on
+    the next decision call. This prevents the agent from monologuing past
+    an implicit question."""
+    said, llm, _, _ = _harness(
+        [SpeakDecision(text="Pretty solid setup."), DoneDecision()],
+        user_inputs=["wait, before we go on, what about the camera?"],
+    )
+    assert said == ["Pretty solid setup."]
+    # The interjection should land in working memory before the LLM's
+    # second decide() call
+    second_wm = llm.calls[1]["working_memory"]
+    user_turns = [t for t in second_wm if t.role == "user"]
+    assert len(user_turns) == 1
+    assert "wait, before we go on" in user_turns[0].content
+
+
+def test_speak_decision_empty_interjection_does_not_create_user_turn() -> None:
+    """Empty input (just Enter) means 'continue' — no user turn added."""
+    said, llm, _, _ = _harness(
+        [SpeakDecision(text="Continuing."), DoneDecision()],
+        user_inputs=[""],  # operator just presses Enter
+    )
+    assert said == ["Continuing."]
+    second_wm = llm.calls[1]["working_memory"]
+    user_turns = [t for t in second_wm if t.role == "user"]
+    assert user_turns == []
+
+
 def test_ask_decision_prompts_and_collects_user_reply() -> None:
     said, llm, _, _ = _harness(
         [AskDecision(question="What's your favorite color?"), DoneDecision()],

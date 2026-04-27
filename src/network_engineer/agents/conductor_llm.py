@@ -66,9 +66,14 @@ log = logging.getLogger("agents.conductor_llm")
 _VIRTUAL_TOOLS: list[dict[str, Any]] = [
     {
         "name": "speak",
-        "description": "Say something to the operator. Use for narrative responses, "
-                       "explanations, summaries, opening greetings. Operator does not "
-                       "respond directly — call ask_operator if you want a reply.",
+        "description": "Say something to the operator that does NOT expect a reply. "
+                       "Use for statements, summaries, explanations, opening greetings. "
+                       "If your message contains a question mark or asks the operator "
+                       "anything, use ask_operator instead — speak does not block for "
+                       "a response, the loop proceeds to your next decision. After a "
+                       "speak the operator may still interject (their typed input "
+                       "becomes the next user turn); but never rely on that — questions "
+                       "go via ask_operator, period.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -80,9 +85,10 @@ _VIRTUAL_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "ask_operator",
-        "description": "Ask the operator a question and wait for their reply. "
-                       "Only use when no tool can answer — discovery and "
-                       "snapshot reads come first.",
+        "description": "Ask the operator a question and BLOCK until their reply lands. "
+                       "Use for any message expecting a response — questions, "
+                       "confirmations, follow-ups. The loop pauses; the operator's "
+                       "answer becomes the next user turn the model sees.",
         "input_schema": {
             "type": "object",
             "properties": {

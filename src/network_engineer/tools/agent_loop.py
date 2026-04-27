@@ -332,6 +332,16 @@ def run_agent(
         if isinstance(decision, SpeakDecision):
             on_say(decision.text)
             working_memory.add_assistant(decision.text)
+            # After a speak, give the operator a chance to interject. Empty
+            # input (just Enter) means "continue, no interjection" and the
+            # loop proceeds to the next LLM turn without a user message.
+            # Non-empty input becomes a user turn the LLM sees on its next
+            # decision call. This prevents the agent from monologuing past
+            # an implicit question; it also makes conversation feel natural
+            # — when someone says something to you, you can reply.
+            interjection = on_user_input("> ")
+            if interjection:
+                working_memory.add_user(interjection)
 
         elif isinstance(decision, AskDecision):
             on_say(decision.question)
