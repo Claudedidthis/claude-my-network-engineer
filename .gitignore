@@ -26,6 +26,7 @@ tests/fixtures/*.local.json
 # Runtime data
 logs/
 snapshots/
+runs/
 
 # Python
 __pycache__/
