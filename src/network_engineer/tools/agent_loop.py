@@ -59,12 +59,21 @@ class ToolSpec:
     does anything with the schema except pass it to the LLM via
     `AgentLLM.decide`; the LLM is responsible for producing args that
     conform.
+
+    `requires_approval` marks the tool as one that must clear the
+    deterministic ApprovalGate before execution — no LLM-mediated
+    "approval" is trusted. When set, the loop intercepts the
+    CallToolDecision: prints a code to the operator, reads paste-safe
+    input, deterministic-compares to the code, and only then runs the
+    tool. Mismatch returns an `approval_denied` tool_observation; the
+    LLM cannot bypass.
     """
 
     name: str
     description: str
     fn: Callable[..., Any]
     schema: dict[str, Any] = field(default_factory=dict)
+    requires_approval: bool = False
 
 
 # ── AgentDecision — six kinds ────────────────────────────────────────────────
@@ -308,6 +317,7 @@ def run_agent(
     on_user_input: Callable[[str], str],
     on_status: Callable[[dict[str, Any]], None] | None = None,
     max_turns: int = 100,
+    approval_gate: Any = None,
 ) -> SessionState:
     """Run the agent loop until done_for_now or max_turns exhaustion.
 
@@ -374,6 +384,106 @@ def run_agent(
                     "tool": decision.tool,
                 })
                 continue
+
+            # Deterministic approval gate. The LLM emitted a write tool_use;
+            # before it executes, the operator must type the code the gate
+            # generated. The match is byte-strict and runs in this loop —
+            # the LLM never sees code generation or matching, so prompt
+            # injection cannot synthesize approval.
+            if tool.requires_approval:
+                if approval_gate is None:
+                    # Misconfiguration — fail closed. Tool stays unexecuted;
+                    # the model gets a clear refusal as tool_observation.
+                    refusal = (
+                        f"approval_denied: tool {decision.tool!r} requires "
+                        "approval but no ApprovalGate is configured. Refusing "
+                        "to execute."
+                    )
+                    working_memory.add_tool_observation(refusal)
+                    session_state.record_tool_call(
+                        decision.tool, decision.args, {"error": refusal},
+                    )
+                    _emit_status({
+                        "event": "approval_misconfigured",
+                        "tool": decision.tool,
+                    })
+                    continue
+
+                action_id = f"act-{uuid4().hex[:10]}"
+                description = _summarize_for_approval(
+                    decision.tool, decision.args, tool.description,
+                )
+                pending = approval_gate.request(
+                    action_id=action_id,
+                    description=description,
+                )
+                # Render the approval challenge directly to the operator.
+                # The CODE comes from deterministic Python (secrets.randbelow);
+                # NOT from the LLM, which means the model can't whisper the
+                # code via speak text either — it doesn't have it.
+                _emit_status({
+                    "event": "approval_required",
+                    "tool": decision.tool,
+                    "action_id": action_id,
+                    "description": description,
+                    "code_digits": len(pending.code),
+                    "ttl_seconds": int(pending.expires_at - pending.created_at),
+                })
+                on_say(
+                    "\n🔐 APPROVAL REQUIRED — write operation pending.\n"
+                    f"\nAction: {description}\n"
+                    f"\nType the {len(pending.code)}-digit code below to approve, "
+                    "or anything else to cancel.\n"
+                    f"Code: {pending.code}\n"
+                )
+                typed = on_user_input("[approval code] > ")
+                result = approval_gate.submit(typed)
+                if not result.matched:
+                    refusal = (
+                        f"approval_denied: {result.reason}. The write was "
+                        "NOT executed. Tell the operator the gate was not "
+                        "satisfied; do not retry without a fresh proposal."
+                    )
+                    working_memory.add_tool_observation(refusal)
+                    session_state.record_tool_call(
+                        decision.tool, decision.args,
+                        {"error": "approval_denied", "reason": result.reason},
+                    )
+                    _emit_status({
+                        "event": "approval_denied",
+                        "tool": decision.tool,
+                        "reason": result.reason,
+                    })
+                    on_say("✗ Approval not granted — change cancelled.")
+                    continue
+                # Match — consume the gate so the same approval can't be
+                # reused for a second write.
+                if not approval_gate.consume(action_id):
+                    # Should be unreachable given submit() returned matched=True,
+                    # but defend in depth — if the gate state diverged for any
+                    # reason, fail closed.
+                    refusal = (
+                        "approval_denied: gate consume() failed unexpectedly "
+                        "after a matched submit(). Refusing to execute. This "
+                        "is a bug — investigate."
+                    )
+                    working_memory.add_tool_observation(refusal)
+                    session_state.record_tool_call(
+                        decision.tool, decision.args,
+                        {"error": "approval_consume_failed"},
+                    )
+                    _emit_status({
+                        "event": "approval_consume_failed",
+                        "tool": decision.tool,
+                    })
+                    continue
+                _emit_status({
+                    "event": "approval_granted",
+                    "tool": decision.tool,
+                    "action_id": action_id,
+                })
+                on_say("✓ Approval granted — applying change now.")
+
             _emit_status({
                 "event": "tool_starting",
                 "tool": decision.tool,
@@ -426,6 +536,31 @@ def run_agent(
     raise AgentLoopExhausted(
         f"Agent loop exceeded max_turns={max_turns} without done_for_now",
     )
+
+
+def _summarize_for_approval(
+    tool_name: str, args: dict[str, Any], tool_description: str,
+) -> str:
+    """One-line human summary of a pending write, surfaced verbatim to the
+    operator at approval time. We deliberately echo the *actual args* the
+    model is about to call with — even if it lied in earlier speak text,
+    these are what will run.
+    """
+    head = tool_description.splitlines()[0] if tool_description else tool_name
+    if not args:
+        return f"{tool_name} — {head}"
+    # Keep arg rendering compact and bounded so a malicious or oversized
+    # arg string can't push the operator's confirmation off-screen.
+    parts = []
+    for k, v in sorted(args.items()):
+        v_repr = repr(v)
+        if len(v_repr) > 80:
+            v_repr = v_repr[:77] + "..."
+        parts.append(f"{k}={v_repr}")
+    args_str = ", ".join(parts)
+    if len(args_str) > 240:
+        args_str = args_str[:237] + "..."
+    return f"{tool_name}({args_str}) — {head}"
 
 
 def _query_from_recent(turns: list[Turn]) -> str:

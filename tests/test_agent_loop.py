@@ -81,6 +81,7 @@ def _harness(
     tools: dict[str, ToolSpec] | None = None,
     user_inputs: list[str] | None = None,
     max_turns: int = 100,
+    approval_gate: Any = None,
 ):
     """Build a fully-wired test environment. Returns (said, llm, durable, session)."""
     said: list[str] = []
@@ -109,6 +110,7 @@ def _harness(
         on_say=on_say,
         on_user_input=on_user_input,
         max_turns=max_turns,
+        approval_gate=approval_gate,
     )
     return said, llm, durable, session_after
 
@@ -548,3 +550,172 @@ def test_realistic_onboarding_like_scenario() -> None:
     assert durable.decisions[0]["vendor"] == "Lutron"
     assert seen_oui == ["60:64:05:00:00:01"]
     assert len(session.tool_calls) == 1
+
+
+# ── Deterministic approval gate ─────────────────────────────────────────────
+
+
+def test_gated_tool_executes_when_operator_types_correct_code() -> None:
+    """Happy path: model emits a gated tool_use, the loop generates a code,
+    operator types it correctly, tool executes."""
+    from network_engineer.tools.approval_gate import ApprovalGate
+
+    gate = ApprovalGate(code_digits=3)
+    executed_with: list[dict[str, Any]] = []
+
+    tools = {
+        "apply_change": ToolSpec(
+            name="apply_change",
+            description="Apply the staged config change to the controller.",
+            fn=lambda action: executed_with.append({"action": action}) or {"ok": True},
+            schema={"type": "object", "properties": {"action": {"type": "string"}}},
+            requires_approval=True,
+        ),
+    }
+
+    decisions = [
+        CallToolDecision(tool="apply_change", args={"action": "create_vlan_20"}),
+        DoneDecision(),
+    ]
+
+    # The harness's input list is consumed in order: first input drives the
+    # approval prompt. We can't know the code in advance — but the test
+    # captures it post-hoc by reading gate state via a small instrumented
+    # wrapper. Instead: simulate by patching the gate's randomness.
+    from unittest.mock import patch
+    with patch("network_engineer.tools.approval_gate.secrets.randbelow", return_value=472):
+        # The first input MUST be the matching code "472" (zero-padded
+        # to 3 digits per code_digits=3). Anything else cancels.
+        said, llm, durable, session = _harness(
+            decisions=decisions, tools=tools,
+            user_inputs=["472"],
+            approval_gate=gate,
+        )
+
+    assert executed_with == [{"action": "create_vlan_20"}], (
+        "tool should have executed exactly once with the model-supplied args"
+    )
+    # The "Approval granted — applying change now." line was spoken.
+    assert any("Approval granted" in s for s in said)
+    # And the approval challenge was rendered to the operator.
+    assert any("APPROVAL REQUIRED" in s for s in said)
+    assert any("472" in s for s in said), "code should be visible to operator"
+
+
+def test_gated_tool_refuses_on_wrong_code_and_does_not_execute() -> None:
+    """Operator types something other than the code → tool MUST NOT execute,
+    a tool_observation lands explaining approval_denied."""
+    from network_engineer.tools.approval_gate import ApprovalGate
+
+    gate = ApprovalGate(code_digits=3)
+    executed_with: list[Any] = []
+
+    tools = {
+        "apply_change": ToolSpec(
+            name="apply_change",
+            description="Apply the change.",
+            fn=lambda **kw: executed_with.append(kw) or {"ok": True},
+            schema={"type": "object"},
+            requires_approval=True,
+        ),
+    }
+
+    decisions = [
+        CallToolDecision(tool="apply_change", args={"action": "x"}),
+        # The model must respond to the approval_denied tool_observation.
+        # We script it as a Speak that acknowledges the denial.
+        SpeakDecision(text="Got it — gate refused, not retrying."),
+        DoneDecision(),
+    ]
+
+    from unittest.mock import patch
+    with patch("network_engineer.tools.approval_gate.secrets.randbelow", return_value=472):
+        said, llm, durable, session = _harness(
+            decisions=decisions, tools=tools,
+            user_inputs=["yes"],  # WRONG — not the code
+            approval_gate=gate,
+        )
+
+    assert executed_with == [], (
+        "tool MUST NOT execute when the operator did not type the exact code — "
+        "this is the prompt-injection defense"
+    )
+    assert any("Approval not granted" in s for s in said)
+    # The tool_observation that the model received should explain why.
+    # We verify by inspecting the second decide() call's working_memory.
+    second_call_wm = llm.calls[1]["working_memory"]
+    obs_contents = [t.content for t in second_call_wm if t.role == "tool_observation"]
+    assert any("approval_denied" in c for c in obs_contents)
+
+
+def test_gated_tool_with_no_gate_configured_fails_closed() -> None:
+    """If a tool is marked requires_approval but no gate was wired, the loop
+    must refuse rather than execute. Defense in depth — misconfiguration
+    should not become a silent bypass."""
+    executed_with: list[Any] = []
+    tools = {
+        "apply_change": ToolSpec(
+            name="apply_change",
+            description="Apply.",
+            fn=lambda **kw: executed_with.append(kw) or {"ok": True},
+            requires_approval=True,
+        ),
+    }
+    decisions = [
+        CallToolDecision(tool="apply_change", args={}),
+        DoneDecision(),
+    ]
+    said, llm, durable, session = _harness(
+        decisions=decisions, tools=tools, approval_gate=None,
+    )
+    assert executed_with == []
+    second_call_wm = llm.calls[1]["working_memory"]
+    obs_contents = [t.content for t in second_call_wm if t.role == "tool_observation"]
+    assert any("approval_denied" in c and "no ApprovalGate is configured" in c
+               for c in obs_contents)
+
+
+def test_gate_enforces_one_approval_per_write() -> None:
+    """A single approval must NOT cover multiple writes. The gate consumes
+    on first execute; a second gated tool needs its own fresh code."""
+    from network_engineer.tools.approval_gate import ApprovalGate
+
+    gate = ApprovalGate(code_digits=3)
+    runs: list[str] = []
+    tools = {
+        "apply_change": ToolSpec(
+            name="apply_change",
+            description="Apply.",
+            fn=lambda label: runs.append(label) or {"ok": True},
+            schema={"type": "object", "properties": {"label": {"type": "string"}}},
+            requires_approval=True,
+        ),
+    }
+
+    decisions = [
+        CallToolDecision(tool="apply_change", args={"label": "first"}),
+        # Second write — must require its own approval; here we type the
+        # SAME code again to verify the gate has been reset and a new code
+        # is in play (so the old one no longer matches).
+        CallToolDecision(tool="apply_change", args={"label": "second"}),
+        DoneDecision(),
+    ]
+
+    from unittest.mock import patch
+    # First request returns 100; second request returns 200 — different.
+    with patch(
+        "network_engineer.tools.approval_gate.secrets.randbelow",
+        side_effect=[100, 200],
+    ):
+        said, llm, durable, session = _harness(
+            decisions=decisions, tools=tools,
+            user_inputs=["100", "100"],  # second 100 is wrong now
+            approval_gate=gate,
+        )
+
+    # First write executed (correct code), second did NOT (re-used old code).
+    assert runs == ["first"], (
+        "expected only the first gated write to execute. The second "
+        "must have been refused because the previous approval was consumed "
+        f"and a new code was issued. runs={runs}"
+    )

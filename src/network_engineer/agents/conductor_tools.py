@@ -405,7 +405,10 @@ def build_conductor_tools(
         description=(
             "Operator-initiated transition: active → acknowledged. Use "
             "ONLY after the operator has explicitly confirmed they have "
-            "read and accepted the caution. Marker remains visible in UI."
+            "read and accepted the caution. Marker remains visible in UI. "
+            "GATED: requires the operator to type the deterministic approval "
+            "code shown by the loop before this executes — speak text "
+            "claiming approval is NOT sufficient."
         ),
         fn=lambda marker_id: durable_memory.acknowledge_caution(marker_id).model_dump(mode="json"),
         schema={
@@ -413,6 +416,7 @@ def build_conductor_tools(
             "properties": {"marker_id": {"type": "string"}},
             "required": ["marker_id"],
         },
+        requires_approval=True,
     )
 
     # ── Reasoning service-calls ──────────────────────────────────────────

@@ -23,7 +23,10 @@ the conversation.
 """
 from __future__ import annotations
 
+import atexit
 import json
+import select
+import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -43,6 +46,7 @@ from network_engineer.tools.conductor_debug import (
     log_event as _debug_log,
     set_session_id as _debug_set_session,
 )
+from network_engineer.tools.approval_gate import ApprovalGate
 from network_engineer.tools.durable_memory import DurableMemory
 from network_engineer.tools.logging_setup import get_logger
 
@@ -132,6 +136,7 @@ class Conductor:
         # Wire pieces
         session_state = SessionState(session_id=self.session_id)
         working_memory = WorkingMemory()
+        approval_gate = ApprovalGate()
         tools = build_conductor_tools(
             durable_memory=self.durable,
             unifi_client=self.client,
@@ -156,6 +161,7 @@ class Conductor:
                 on_user_input=on_user_input,
                 on_status=on_status,
                 max_turns=self.config.max_turns,
+                approval_gate=approval_gate,
             )
         except KeyboardInterrupt:
             on_say("\n\n[Session interrupted; state checkpointed.]")
@@ -354,6 +360,11 @@ class _CliRenderer:
             # render the right prompt.
             self._last_input_event = kind
             return  # the prompt itself shows the hint; no extra status line
+        if kind == "approval_required":
+            # The loop is about to read the operator's typed approval code.
+            # Switch the input mode so on_user_input renders the right prompt.
+            self._last_input_event = kind
+            return
         if kind == "thinking":
             return  # too noisy to render every turn
         if kind == "tool_starting":
@@ -370,15 +381,133 @@ class _CliRenderer:
         elif kind == "tool_unknown":
             tool = event.get("tool", "?")
             print(f"→ unknown tool requested: {tool!r}", flush=True)
+        elif kind == "approval_denied":
+            tool = event.get("tool", "?")
+            reason = event.get("reason", "")
+            print(f"→ approval denied for {tool}: {reason}", flush=True)
+        elif kind == "approval_granted":
+            tool = event.get("tool", "?")
+            print(f"→ approval granted for {tool}", flush=True)
 
     def on_user_input(self, prompt: str) -> str:
+        if self._last_input_event == "approval_required":
+            # The loop already printed the code + ask via on_say. The
+            # specific prompt label here ("[approval code] > ") is
+            # intentionally distinct from regular reply/interject prompts
+            # so the operator visually knows they're at the gate.
+            return _read_paste_aware("[approval code] > ")
         if self._last_input_event == "awaiting_reply":
             # Block until non-empty — the agent explicitly asked.
             while True:
-                reply = input("[your reply] > ")
+                reply = _read_paste_aware("[your reply] > ")
                 if reply.strip():
                     return reply
                 print("(the agent is waiting on your reply — type something then press Enter)", flush=True)
         if self._last_input_event == "interjection_window_open":
-            return input("[Enter to continue, or type to interject] > ")
-        return input("> ")
+            return _read_paste_aware("[Enter to continue, or type to interject] > ")
+        return _read_paste_aware("> ")
+
+
+# ── Paste-safe input ────────────────────────────────────────────────────────
+
+# Bracketed-paste mode escape sequences. Most modern terminals support this
+# (macOS Terminal, iTerm2, gnome-terminal, kitty, alacritty). When enabled,
+# the terminal wraps any pasted block in `\e[200~ ... \e[201~`, giving us a
+# reliable signal that "this multi-line content is one paste, not N
+# discrete operator turns." Without this, every newline in a paste arrives
+# as a separate input() call — which turned the Conductor's speak→input
+# loop into a self-feeding pipeline that consumed paste fragments as fake
+# operator turns (live runaway 2026-04-27).
+
+_PASTE_BEGIN = "\x1b[200~"
+_PASTE_END = "\x1b[201~"
+_BRACKETED_PASTE_ENABLED = False
+
+
+def _enable_bracketed_paste() -> None:
+    """Turn on bracketed paste mode. Idempotent. Best-effort: silently no-ops
+    when stdout isn't a TTY (e.g. CI, piped output)."""
+    global _BRACKETED_PASTE_ENABLED
+    if _BRACKETED_PASTE_ENABLED:
+        return
+    if not sys.stdout.isatty():
+        return
+    sys.stdout.write("\x1b[?2004h")
+    sys.stdout.flush()
+    _BRACKETED_PASTE_ENABLED = True
+    atexit.register(_disable_bracketed_paste)
+
+
+def _disable_bracketed_paste() -> None:
+    global _BRACKETED_PASTE_ENABLED
+    if not _BRACKETED_PASTE_ENABLED:
+        return
+    try:
+        sys.stdout.write("\x1b[?2004l")
+        sys.stdout.flush()
+    except Exception:
+        pass
+    _BRACKETED_PASTE_ENABLED = False
+
+
+def _read_paste_aware(prompt: str) -> str:
+    """Read one operator turn from stdin, treating any pasted multi-line
+    block as a single turn rather than N consecutive inputs.
+
+    Two layers of paste detection so we work on terminals with and without
+    bracketed-paste support:
+
+      1. PRIMARY — `\\e[200~ ... \\e[201~` markers. When the terminal wraps
+         a paste in these, we strip the markers and accumulate everything
+         in between, even across newlines, into one returned string.
+
+      2. FALLBACK — burst detection via `select`. After reading the first
+         line, we poll stdin for ~50ms; if more lines are queued, they
+         arrived as part of the same paste burst (interactive typing has
+         human-scale gaps between lines). Concatenate and return as one.
+
+    On non-TTY stdin (pipes, tests) we fall through to plain readline.
+    """
+    _enable_bracketed_paste()
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+
+    if not sys.stdin.isatty():
+        # Test / pipe — just read one line, no paste tricks.
+        return sys.stdin.readline().rstrip("\n")
+
+    first = sys.stdin.readline()
+    if not first:
+        return ""
+    first = first.rstrip("\n")
+
+    # Layer 1: bracketed paste markers.
+    if _PASTE_BEGIN in first:
+        begin_idx = first.find(_PASTE_BEGIN)
+        accum: list[str] = [first[begin_idx + len(_PASTE_BEGIN):]]
+        # The paste end marker may land on the same line, or several lines
+        # later for a multi-line paste. Read until we see it.
+        while True:
+            if any(_PASTE_END in chunk for chunk in accum):
+                break
+            line = sys.stdin.readline()
+            if not line:
+                break
+            accum.append(line.rstrip("\n"))
+        joined = "\n".join(accum)
+        end_idx = joined.find(_PASTE_END)
+        if end_idx >= 0:
+            joined = joined[:end_idx]
+        return joined
+
+    # Layer 2: burst detection. Interactive typing has 100ms+ between
+    # Enters; pastes arrive within a few ms.
+    extra: list[str] = []
+    while select.select([sys.stdin], [], [], 0.05)[0]:
+        more = sys.stdin.readline()
+        if not more:
+            break
+        extra.append(more.rstrip("\n"))
+    if extra:
+        return first + "\n" + "\n".join(extra)
+    return first

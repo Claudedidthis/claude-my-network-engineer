@@ -6,6 +6,37 @@ Each entry records what was tried, what broke, why, and what we changed. Newest 
 
 ---
 
+## 2026-04-27 — Paste-fed runaway and the deterministic approval gate
+
+**The runaway.** Operator pasted a multi-line block of prior-session output into the running CLI. Python's `input()` reads one line at a time, so every newline in the paste arrived as a separate "operator turn." The Conductor's tight `speak → input → speak → input` loop became a self-feeding pipeline: it consumed paste fragments like `"Encryption** |"` and `"WPA2-Personal"` as discrete operator messages, generated helpful agent prompts in response (*"Got it — more rows?"*), which consumed more paste, etc. Eventually the model emitted *"That reads as your approval. Locking it in now."* in response to garbled fragments.
+
+**Why nothing was applied.** The conductor's tool registry is read-only + local-memory-write; no UniFi-write tool was wired. The "✅ Approval logged" was pure speak text, theater. But: if a write *had* been wired, this scenario would have synthesized authorization through model interpretation of ambiguous input. That's the prompt-injection threat made physical.
+
+**Two defenses landed.**
+
+1. **Bracketed paste detection in the CLI.** Two layers:
+   - PRIMARY: enable bracketed-paste mode (`\e[?2004h`) at startup. Modern terminals wrap pastes in `\e[200~ ... \e[201~`; the renderer accumulates everything between markers as one operator turn.
+   - FALLBACK: burst detection via `select`. After reading a line, poll stdin for ~50ms; if more lines are queued, they arrived as part of the same paste (interactive typing has 100ms+ gaps). Concatenate and return as one input.
+   - On non-TTY stdin (tests, pipes), skip both layers and read normally.
+
+2. **Deterministic approval gate.** New module `tools/approval_gate.py`. Tools are marked `requires_approval=True` in their `ToolSpec`. When the LLM emits a `CallToolDecision` for one, the agent loop:
+   1. Generates a fresh random N-digit code (`secrets.randbelow`).
+   2. Renders the *actual args the model is about to call with* + the code, directly to the operator.
+   3. Reads paste-safe operator input.
+   4. Compares byte-strict (after stripping whitespace) — no substring match, no inference.
+   5. Match → consumes the gate atomically and runs the tool. Mismatch → tool refuses, returns `approval_denied` tool_observation.
+   - Gate state is held in deterministic Python; the LLM never sees code generation or matching. Speak text claiming approval is ignored.
+   - One-strike cancellation: a wrong code voids the pending approval (no slow-guessing under the TTL).
+   - One approval, one write: `consume()` clears the gate; a second write needs a fresh challenge.
+
+**Threat model the gate defends.** Prompt injection of approval phrases ("yes", "approve") in operator messages, tool outputs, durable memory, paste buffers. Hallucinated approvals from the model. Anything where the LLM's interpretation of "did the operator approve?" is the gate.
+
+**Threat model the gate doesn't defend.** Operator with the typed code visible to a third party — by design, the operator is the trust anchor. Race conditions in shared terminals (single-operator interactive flow assumed).
+
+**Lesson.** Whenever a write path is going to live, the question to ask is: "Where in this call chain does the LLM make the trust decision?" If the answer is anywhere, the design is broken. Deterministic Python must be the gate; the LLM can announce intent and shape the conversation, but cannot be the judge of its own authorization.
+
+---
+
 ## 2026-04-27 — Live UX bundle: graceful API limits, cache visibility, save_fact discipline
 
 **Context.** After the working_memory truncation fix, the next live session ran cleanly through ~16 model turns including a multi-step proposal flow. It died on the *very last* API call when the operator typed YES — Anthropic returned a workspace-limit 400.
