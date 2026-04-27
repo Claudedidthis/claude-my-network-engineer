@@ -331,6 +331,85 @@ def test_tool_use_correlates_with_tool_result_on_next_call() -> None:
     assert "5 findings" in tool_result_blocks[0]["content"]
 
 
+def test_two_tool_uses_produce_single_user_message_with_both_results() -> None:
+    """REGRESSION (live 400 2026-04-27 second occurrence): when the model
+    emits two tool_uses in one response, the loop runs both tools, then
+    decide() folds two tool_observations. The OLD fold emitted one user
+    message PER tool_observation, producing two consecutive user messages
+    in api_messages. Anthropic rejects with 400 because user/assistant
+    must strictly alternate. Fix: emit ONE user message containing all
+    tool_result blocks."""
+    class _SequencedMessages:
+        def __init__(self, responses):
+            self.responses = list(responses)
+            self.calls = 0
+            self.last_kwargs = None
+
+        def create(self, **kwargs):
+            self.last_kwargs = kwargs
+            r = self.responses[min(self.calls, len(self.responses) - 1)]
+            self.calls += 1
+            return r
+
+    seq = _SequencedMessages([
+        _FakeMessage([
+            _FakeBlock(type="tool_use", name="audit_network", id="toolu_a", input={}),
+            _FakeBlock(type="tool_use", name="identify_smart_home_brands", id="toolu_b", input={}),
+        ]),
+        _FakeMessage([
+            _FakeBlock(type="tool_use", name="done_for_now", input={}),
+        ]),
+    ])
+    fake = type("X", (), {"messages": seq})()
+    from network_engineer.agents.ai_runtime import AIRuntime
+    runtime = AIRuntime(enabled=True, client=fake)
+    llm = AIRuntimeAgentLLM(runtime)
+
+    # Drive the queue: two CallToolDecisions, then run both tools, then decide()
+    d1 = llm.decide(system_prompt="(t)", working_memory=[],
+                    session_summary="", durable_subset="", tools={})
+    assert isinstance(d1, CallToolDecision)
+    d2 = llm.decide(system_prompt="(t)", working_memory=[],
+                    session_summary="", durable_subset="", tools={})
+    assert isinstance(d2, CallToolDecision)
+
+    wm = [
+        Turn(role="tool_observation", content="audit_network → 5 findings"),
+        Turn(role="tool_observation", content="brands → ['lutron']"),
+    ]
+    d3 = llm.decide(system_prompt="(t)", working_memory=wm,
+                    session_summary="", durable_subset="", tools={})
+    assert isinstance(d3, DoneDecision)
+
+    # Inspect: the second API call's messages must alternate user/assistant
+    msgs = seq.last_kwargs["messages"]
+
+    # No two consecutive same-role messages allowed by Anthropic.
+    for i in range(len(msgs) - 1):
+        assert msgs[i]["role"] != msgs[i + 1]["role"], (
+            f"messages[{i}] and messages[{i+1}] are both {msgs[i]['role']!r} — "
+            "violates Anthropic strict-alternation rule (would 400 at runtime)"
+        )
+
+    # Find the user message that contains the tool_result blocks. There
+    # should be ONE such message, with TWO tool_result blocks.
+    tool_result_msgs = []
+    for m in msgs:
+        if m["role"] != "user":
+            continue
+        content = m["content"]
+        if isinstance(content, list) and any(
+            isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+        ):
+            tool_result_msgs.append(m)
+    assert len(tool_result_msgs) == 1, (
+        f"expected ONE user message with tool_result blocks, got {len(tool_result_msgs)}"
+    )
+    blocks = [b for b in tool_result_msgs[0]["content"] if b.get("type") == "tool_result"]
+    assert len(blocks) == 2
+    assert {b["tool_use_id"] for b in blocks} == {"toolu_a", "toolu_b"}
+
+
 def test_two_tool_uses_in_one_response_correlate_via_fifo_queue() -> None:
     """REGRESSION (caught by code-review 2026-04-27): when the model emits
     multiple real tool_uses in one response, EACH must correlate with its
@@ -524,18 +603,26 @@ def test_interjection_during_queued_tool_use_does_not_break_anthropic_ordering()
         for b in next_msg["content"]
     ), "expected a tool_result block matching the assistant's tool_use_id"
 
-    # The interjection ("sure go do that") should appear in a SUBSEQUENT
-    # user message, after the tool_result one.
-    after_tool_result = msgs[tool_use_idx + 2:]
-    interjection_messages = [
-        m for m in after_tool_result
-        if m["role"] == "user" and isinstance(m["content"], str)
-        and "sure go do that" in m["content"]
+    # The interjection ("sure go do that") should appear in the SAME
+    # user message as the tool_result (mixed content), per the
+    # strict-alternation invariant fix. Both tool_result and the
+    # interjection text must be content blocks within ONE user message.
+    interjection_blocks = [
+        b for b in next_msg["content"]
+        if isinstance(b, dict) and b.get("type") == "text"
+        and "sure go do that" in b.get("text", "")
     ]
-    assert interjection_messages, (
+    assert interjection_blocks, (
         "expected the operator interjection 'sure go do that' to appear "
-        "in a user message AFTER the tool_result block"
+        "as a text block within the same user message as the tool_result"
     )
+
+    # Verify strict user/assistant alternation (Anthropic 400 invariant)
+    for i in range(len(msgs) - 1):
+        assert msgs[i]["role"] != msgs[i + 1]["role"], (
+            f"messages[{i}] and messages[{i+1}] are both {msgs[i]['role']!r} — "
+            "violates Anthropic strict-alternation rule"
+        )
 
 
 def test_api_messages_are_capped_at_max() -> None:

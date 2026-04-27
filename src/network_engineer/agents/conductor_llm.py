@@ -389,64 +389,85 @@ class AIRuntimeAgentLLM:
     # ── Internals ────────────────────────────────────────────────────────
 
     def _fold_working_memory_delta(self, working_memory: list[Turn]) -> None:
-        """Walk new turns since last call; add user/tool_observation to api_messages.
+        """Walk new turns since last call; emit AT MOST ONE user message
+        containing all relevant content blocks for the delta.
 
-        TWO-PASS ORDERING (regression fix 2026-04-27 from a live 400 error):
+        Anthropic strict-alternation invariant (regression fix 2026-04-27
+        from a live 400 error): user/assistant messages MUST alternate.
+        Two consecutive user messages get rejected. The delta from one
+        loop iteration may include multiple tool_observations (when the
+        prior response queued multiple tool_uses) AND/OR operator
+        interjections. All of them must land in ONE user message with a
+        mixed content list:
 
-        Anthropic's API requires the message immediately after an assistant
-        message containing tool_use blocks to contain the matching
-        tool_result blocks. If the queue produced a multi-decision response
-        (text + tool_use), the operator may have interjected during the
-        speak BEFORE the queued tool ran. In working_memory order that's
-        [assistant_speak, user_interjection, tool_observation]. Folding
-        them in working-memory order would produce
-        [user: "interjection", user: tool_result] — and the API rejects
-        with 400 because the first message after the tool_use must contain
-        the tool_result.
+            {
+              role: user,
+              content: [
+                {type: tool_result, tool_use_id: A, content: "..."},
+                {type: tool_result, tool_use_id: B, content: "..."},
+                {type: text, text: "operator interjection"}
+              ]
+            }
 
-        Fix: pass 1 emits tool_result blocks for every tool_observation
-        (correlated FIFO with pending tool_use_ids). Pass 2 emits any
-        other user-role content. The model sees: I emitted a tool_use,
-        the tool ran, now there's also some operator input.
+        Order within the content list: tool_result blocks first
+        (Anthropic requires them immediately after the assistant tool_use),
+        then text blocks (interjections / ask replies / synthesized
+        observations).
 
         Assistant turns from working memory are always skipped — they're
         added to api_messages at response-receive time with full content
         blocks (text + tool_use preserved).
         """
         new_turns = working_memory[self._processed_turn_count:]
+        self._processed_turn_count = len(working_memory)
 
-        # Pass 1: tool_observations → tool_result user messages
+        blocks: list[dict[str, Any]] = []
+
+        # Pass 1: tool_observations → tool_result blocks (FIFO correlation)
         for turn in new_turns:
             if turn.role != "tool_observation":
                 continue
             if self._pending_tool_use_ids:
                 use_id = self._pending_tool_use_ids.pop(0)
-                self._api_messages.append({
-                    "role": "user",
-                    "content": [{
-                        "type": "tool_result",
-                        "tool_use_id": use_id,
-                        "content": turn.content[:8000],
-                    }],
+                blocks.append({
+                    "type": "tool_result",
+                    "tool_use_id": use_id,
+                    "content": turn.content[:8000],
                 })
             else:
-                # No pending id — synthesize as plain text. Degraded
-                # but better than crashing.
-                self._api_messages.append({
-                    "role": "user",
-                    "content": f"[tool_observation] {turn.content}",
+                # No pending id — synthesize as a text block in the same
+                # user message. Degraded but consistent with strict
+                # alternation.
+                blocks.append({
+                    "type": "text",
+                    "text": f"[tool_observation] {turn.content}",
                 })
 
-        # Pass 2: other user-role turns (interjections, ask replies)
+        # Pass 2: user-role turns (interjections, ask replies) → text blocks
         for turn in new_turns:
             if turn.role == "user":
-                self._api_messages.append({
-                    "role": "user",
-                    "content": turn.content,
+                blocks.append({
+                    "type": "text",
+                    "text": turn.content,
                 })
             # assistant turns are skipped — captured at response-receive time
 
-        self._processed_turn_count = len(working_memory)
+        if not blocks:
+            return
+
+        # Simplification: if the only block is plain text, send `content`
+        # as a string for canonical Anthropic shape. Otherwise send the
+        # full list (required when any tool_result blocks are present).
+        if len(blocks) == 1 and blocks[0]["type"] == "text":
+            self._api_messages.append({
+                "role": "user",
+                "content": blocks[0]["text"],
+            })
+        else:
+            self._api_messages.append({
+                "role": "user",
+                "content": blocks,
+            })
 
     def _build_anthropic_tools(
         self, tools: dict[str, ToolSpec],
