@@ -236,17 +236,22 @@ def test_messages_with_no_working_memory_includes_bootstrap_nudge() -> None:
     )
     msgs = runtime._client.messages.last_kwargs["messages"]
     # Should have a bootstrap user message
-    assert any("loop-bootstrap" in m["content"] for m in msgs)
+    assert any(
+        "loop-bootstrap" in str(m.get("content", ""))
+        for m in msgs
+    )
 
 
-def test_messages_replay_working_memory() -> None:
+def test_messages_fold_user_turns_from_working_memory() -> None:
+    """User-role turns in working memory get added to api_messages on the
+    next decide() call. Assistant turns DO NOT get replayed — they're
+    added from API responses directly."""
     runtime = _make_runtime([
         _FakeBlock(type="tool_use", name="done_for_now", input={}),
     ])
     llm = AIRuntimeAgentLLM(runtime)
     wm = [
         Turn(role="user", content="Hi"),
-        Turn(role="assistant", content="Hello"),
         Turn(role="user", content="What's my IP?"),
     ]
     llm.decide(
@@ -254,29 +259,102 @@ def test_messages_replay_working_memory() -> None:
         session_summary="", durable_subset="", tools={},
     )
     msgs = runtime._client.messages.last_kwargs["messages"]
-    contents = [m["content"] for m in msgs]
-    assert "Hi" in contents
-    assert "Hello" in contents
-    assert "What's my IP?" in contents
+    contents = [str(m["content"]) for m in msgs if m["role"] == "user"]
+    assert any("Hi" in c for c in contents)
+    assert any("What's my IP?" in c for c in contents)
 
 
-def test_messages_end_on_user_role() -> None:
-    """Anthropic requires conversations end on user-role; a trailing
-    assistant turn gets a continuation nudge."""
-    runtime = _make_runtime([
-        _FakeBlock(type="tool_use", name="done_for_now", input={}),
+def test_tool_use_correlates_with_tool_result_on_next_call() -> None:
+    """When the model emits a tool_use with id 'toolu_xyz', the next turn's
+    tool_observation must land as a tool_result block referencing 'toolu_xyz'.
+    This is the bug that made the agent retry read_snapshot 13 times."""
+    # Sequence two API responses: first emits tool_use, second is done.
+    class _SequencedMessages:
+        def __init__(self, responses):
+            self.responses = list(responses)
+            self.calls = 0
+            self.last_kwargs = None
+
+        def create(self, **kwargs):
+            self.last_kwargs = kwargs
+            r = self.responses[min(self.calls, len(self.responses) - 1)]
+            self.calls += 1
+            return r
+
+    seq = _SequencedMessages([
+        _FakeMessage([
+            _FakeBlock(type="tool_use", name="audit_network", id="toolu_audit_1", input={}),
+        ]),
+        _FakeMessage([
+            _FakeBlock(type="tool_use", name="done_for_now", input={}),
+        ]),
     ])
+    fake_anthropic = type("X", (), {"messages": seq})()
+    from network_engineer.agents.ai_runtime import AIRuntime
+    runtime = AIRuntime(enabled=True, client=fake_anthropic)
     llm = AIRuntimeAgentLLM(runtime)
-    wm = [
-        Turn(role="user", content="Hi"),
-        Turn(role="assistant", content="Hello"),
-    ]
-    llm.decide(
-        system_prompt="(test)", working_memory=wm,
+
+    # First call: model emits tool_use; we receive it as CallToolDecision.
+    d1 = llm.decide(
+        system_prompt="(test)", working_memory=[],
         session_summary="", durable_subset="", tools={},
     )
-    msgs = runtime._client.messages.last_kwargs["messages"]
-    assert msgs[-1]["role"] == "user"
+    assert isinstance(d1, CallToolDecision)
+    assert d1.tool == "audit_network"
+
+    # Loop now runs the tool and adds a tool_observation to working memory.
+    wm_after_tool = [
+        Turn(role="tool_observation", content="audit_network(...) → 5 findings"),
+    ]
+    # Second call: the adapter must include a tool_result block correlated
+    # with toolu_audit_1.
+    d2 = llm.decide(
+        system_prompt="(test)", working_memory=wm_after_tool,
+        session_summary="", durable_subset="", tools={},
+    )
+    assert isinstance(d2, DoneDecision)
+
+    # Inspect the messages sent on the second call
+    msgs = seq.last_kwargs["messages"]
+    # Find a user-role message whose content contains a tool_result block
+    tool_result_blocks = []
+    for m in msgs:
+        if m["role"] != "user":
+            continue
+        content = m["content"]
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    tool_result_blocks.append(block)
+    assert tool_result_blocks, "expected a tool_result block on the second API call"
+    assert tool_result_blocks[0]["tool_use_id"] == "toolu_audit_1"
+    assert "5 findings" in tool_result_blocks[0]["content"]
+
+
+def test_multi_block_response_emits_speak_then_call_tool() -> None:
+    """When the model emits [text + tool_use] in one response, the loop
+    should see a SpeakDecision FIRST (so the operator hears the
+    narration), then the CallToolDecision on the next decide() call."""
+    runtime = _make_runtime([
+        _FakeBlock(type="text", text="I'll check your network now."),
+        _FakeBlock(type="tool_use", name="audit_network", id="toolu_1", input={}),
+    ])
+    llm = AIRuntimeAgentLLM(runtime)
+
+    d1 = llm.decide(
+        system_prompt="(test)", working_memory=[],
+        session_summary="", durable_subset="", tools={},
+    )
+    assert isinstance(d1, SpeakDecision)
+    assert "check your network" in d1.text
+
+    # Second decide() drains the queue without making another API call
+    d2 = llm.decide(
+        system_prompt="(test)", working_memory=[],
+        session_summary="", durable_subset="", tools={},
+    )
+    assert isinstance(d2, CallToolDecision)
+    assert d2.tool == "audit_network"
 
 
 # ── conductor_tools: tool registry ──────────────────────────────────────────

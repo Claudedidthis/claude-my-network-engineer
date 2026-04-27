@@ -5,44 +5,57 @@ Protocol: `decide(...)` returns an AgentDecision given the loop state.
 This module wraps the existing AIRuntime (Anthropic API) to satisfy
 that protocol.
 
-What the adapter does
+Stateful design (real-use bug fix 2026-04-27)
+---------------------------------------------
+
+The adapter maintains its OWN Anthropic-shaped message history across
+decide() calls in one session. The first version reconstructed messages
+from the loop's working memory each turn, which broke Anthropic's
+tool_use/tool_result correlation convention — the model emits tool_use
+with an `id`, and the next message must include a matching tool_result
+block with `tool_use_id=<that id>`. Without correlation, the model
+ignores the result and retries the tool — observed in the wild as the
+agent calling read_snapshot 13 times in 40 seconds.
+
+Two state variables make this work:
+
+  • _api_messages — the conversation as Anthropic sees it. user/assistant
+    role messages with proper tool_use and tool_result content blocks.
+  • _pending_tool_use_id — the most recent tool_use_id we received from
+    the model. The loop's next tool_observation turn becomes a
+    tool_result block referencing this id.
+
+Multi-decision response handling
+--------------------------------
+
+When the model emits BOTH text AND tool_use in one response (common —
+"I'll check your network." + tool_use read_snapshot), we now produce
+multiple AgentDecisions: SpeakDecision for the text, then CallToolDecision
+for the tool. The loop consumes them in order; the operator sees the
+narration before the tool runs.
+
+A `_decision_queue` holds decisions extracted from the response that
+haven't been returned yet. decide() drains the queue before making a new
+API call.
+
+What this module does
 ---------------------
 
-  1. Builds a messages.create payload with:
-       - System block: Conductor system prompt + cached
-       - Cached context block: durable memory subset (untrusted-data tagged)
-       - Cached working memory: rolling 12-turn replay
-       - Session summary as a plain text user-role message
-       - Tools: every ToolSpec exposed via Anthropic tool-use shape
+  1. Builds messages.create payload using stateful _api_messages plus
+     freshly-collected user-role updates from working_memory delta
+     (tool_observations land here as proper tool_result blocks).
+  2. Calls AIRuntime, captures the response in _api_messages.
+  3. Parses response into one or more AgentDecisions; queues them.
 
-  2. Calls AIRuntime, parses the response.
-
-  3. Translates the response to one AgentDecision:
-       - tool_use(name="speak", text=...)            → SpeakDecision
-       - tool_use(name="ask_operator", question=...) → AskDecision
-       - tool_use(name="save_fact", ...)             → SaveFactDecision
-       - tool_use(name="log_decision", entry=...)    → LogDecisionDecision
-       - tool_use(name="done_for_now", ...)          → DoneDecision
-       - tool_use(name=<other tool>, args=...)       → CallToolDecision
-       - text-only (no tool_use)                     → SpeakDecision
-
-We expose `speak`, `ask_operator`, `save_fact`, `log_decision`, and
-`done_for_now` as virtual tools to the LLM (alongside the real tools).
-This gives the model a uniform "I'm always emitting a tool_use" shape,
-which is more reliable than mixing text+tool_use parsing.
-
-What the adapter does NOT do
-----------------------------
-
-  • Implement specific tools — those live in conductor_tools.py.
-  • Execute the chosen tool — the agent loop does that.
-  • Manage memory — the loop owns Working/Session/Durable.
+Five virtual tools (speak, ask_operator, save_fact, log_decision,
+done_for_now) are advertised alongside caller-supplied real tools.
+The model emits these as tool_use blocks; the parser maps them to
+the corresponding AgentDecision shape.
 """
 from __future__ import annotations
 
-import json
 import logging
-from typing import Any, Callable
+from typing import Any
 
 from network_engineer.agents.ai_runtime import AIRuntime
 from network_engineer.tools.agent_loop import (
@@ -107,7 +120,7 @@ _VIRTUAL_TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "field_path": {"type": "string"},
-                "value": {},  # any
+                "value": {},
                 "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                 "evidence": {"type": "array", "items": {"type": "string"}},
                 "rationale": {"type": "string"},
@@ -152,14 +165,16 @@ _VIRTUAL_TOOL_NAMES = {t["name"] for t in _VIRTUAL_TOOLS}
 
 
 class AIRuntimeAgentLLM:
-    """Wraps AIRuntime to satisfy the AgentLLM protocol.
+    """Stateful Anthropic-conversation adapter satisfying AgentLLM Protocol.
 
-    The Conductor instantiates this with its AIRuntime + a `model_alias`
-    ("opus" or "sonnet") indicating which model to use for agent turns.
-    Per existing AIRuntime conventions, "opus" is reserved for high-stakes
-    work — the Conductor uses "sonnet" by default and escalates per tool
-    call as the existing review_change pattern does (sensitive actions
-    bump to opus).
+    Two pieces of mutable state across decide() calls within one session:
+      _api_messages       Anthropic-shaped conversation history.
+      _pending_tool_use_id The model's most recent tool_use_id, used to
+                           correlate the next tool_result block.
+
+    Plus a _decision_queue for multi-decision responses (text + tool_use
+    in one model output emit two decisions: a SpeakDecision then a
+    CallToolDecision).
     """
 
     def __init__(
@@ -174,6 +189,18 @@ class AIRuntimeAgentLLM:
         self.max_tokens = max_tokens
         self._disabled_message_emitted = False
 
+        # Anthropic-shaped conversation. Each entry: {"role": ..., "content": ...}
+        self._api_messages: list[dict[str, Any]] = []
+        # Most recent tool_use_id from the model — paired with the next
+        # tool_observation we see in working memory.
+        self._pending_tool_use_id: str | None = None
+        # Decisions extracted from a multi-block response, queued for the
+        # loop to consume one at a time.
+        self._decision_queue: list[AgentDecision] = []
+        # How many turns of working_memory we've already folded into
+        # _api_messages — incremented as we consume the delta.
+        self._processed_turn_count: int = 0
+
     def decide(
         self,
         *,
@@ -183,11 +210,12 @@ class AIRuntimeAgentLLM:
         durable_subset: str,
         tools: dict[str, ToolSpec],
     ) -> AgentDecision:
-        """Build payload, call Anthropic, parse one AgentDecision."""
+        """Build payload, call Anthropic, parse one AgentDecision.
+
+        Drains the decision queue first; only calls Anthropic when the
+        queue is empty.
+        """
         if not self.ai.enabled:
-            # First disabled turn: explain to the operator. Second: exit.
-            # Two turns total so the SpeakDecision lands via on_say before
-            # DoneDecision tears down the loop.
             if not self._disabled_message_emitted:
                 self._disabled_message_emitted = True
                 return SpeakDecision(
@@ -197,17 +225,43 @@ class AIRuntimeAgentLLM:
                 )
             return DoneDecision(reason="AI runtime disabled")
 
-        anthropic_tools = self._build_anthropic_tools(tools)
-        messages = self._build_messages(working_memory, session_summary)
+        # If we have queued decisions from a multi-block response, return
+        # the next one without making a new API call.
+        if self._decision_queue:
+            return self._decision_queue.pop(0)
 
-        # Resolve model_id from AIRuntime config
+        # Fold any new turns from working_memory into _api_messages.
+        self._fold_working_memory_delta(working_memory)
+
+        # Bootstrap if we have no messages yet.
+        if not self._api_messages:
+            self._api_messages.append({
+                "role": "user",
+                "content": (
+                    "[loop-bootstrap] Opening turn — no working memory yet. "
+                    "Greet the operator appropriately for their situation "
+                    "(use durable memory + session summary to determine if "
+                    "this is a first-meet or a return). Emit a tool_use "
+                    "(speak / ask_operator / call_tool / etc)."
+                ),
+            })
+
+        # Anthropic requires conversations end on a user-role message
+        # before the next assistant turn. If somehow the last message is
+        # assistant (shouldn't happen but defensive), append a nudge.
+        if self._api_messages[-1]["role"] == "assistant":
+            self._api_messages.append({
+                "role": "user",
+                "content": "[loop-tick] Continue.",
+            })
+
+        anthropic_tools = self._build_anthropic_tools(tools)
         model_id = self.ai._config["models"].get(self.model_alias)
         if model_id is None:
             log.warning(
                 "conductor_llm_unknown_model_alias",
                 extra={"alias": self.model_alias},
             )
-            # Fall back to default
             model_id = self.ai._config["models"].get("sonnet", "claude-sonnet-4-6")
 
         try:
@@ -222,11 +276,14 @@ class AIRuntimeAgentLLM:
                     },
                     {
                         "type": "text",
-                        "text": "DURABLE MEMORY SUBSET:\n\n" + (durable_subset or "(none)"),
+                        "text": (
+                            "DURABLE MEMORY SUBSET:\n\n" + (durable_subset or "(none)")
+                            + "\n\nSESSION SUMMARY:\n\n" + (session_summary or "(none)")
+                        ),
                         "cache_control": {"type": "ephemeral"},
                     },
                 ],
-                messages=messages,
+                messages=self._api_messages,
                 tools=anthropic_tools,
             )
         except Exception as exc:
@@ -239,13 +296,87 @@ class AIRuntimeAgentLLM:
                     "error_type": exc.__class__.__name__,
                 },
             )
-            # Hard error → end the session rather than spin
             return DoneDecision(reason=f"LLM API error: {exc.__class__.__name__}")
 
-        return self._parse_response(message)
+        # Append the assistant response to our message history (full
+        # content blocks so tool_use is preserved for next turn's
+        # correlation).
+        assistant_content = self._content_to_dicts(message.content)
+        self._api_messages.append({
+            "role": "assistant",
+            "content": assistant_content,
+        })
 
-    def _build_anthropic_tools(self, tools: dict[str, ToolSpec]) -> list[dict[str, Any]]:
-        """Combine virtual tools (speak/ask/save/log/done) with caller-supplied tools."""
+        # Parse the response into one or more AgentDecisions.
+        decisions = self._parse_response_to_decisions(message)
+        if not decisions:
+            log.warning(
+                "conductor_llm_empty_response",
+                extra={
+                    "agent": "conductor_llm",
+                    "stop_reason": getattr(message, "stop_reason", "unknown"),
+                },
+            )
+            return DoneDecision(reason="LLM returned no actionable content")
+
+        # Capture the FIRST tool_use_id (if any) for correlation with the
+        # next tool_observation. If multiple tool_uses are present we only
+        # correlate the first — multi-tool responses in one assistant turn
+        # are rare and the queue handles ordering.
+        for block in message.content:
+            if getattr(block, "type", None) == "tool_use":
+                # Skip virtual tools that don't produce tool_results — only
+                # real tools need correlation.
+                if getattr(block, "name", "") not in _VIRTUAL_TOOL_NAMES:
+                    self._pending_tool_use_id = getattr(block, "id", None)
+                    break
+
+        # First decision goes back immediately; the rest queue.
+        first, *rest = decisions
+        self._decision_queue.extend(rest)
+        return first
+
+    # ── Internals ────────────────────────────────────────────────────────
+
+    def _fold_working_memory_delta(self, working_memory: list[Turn]) -> None:
+        """Walk new turns since last call; add user/tool_observation to api_messages.
+
+        Skip assistant turns — those are added at response-receive time.
+        """
+        new_turns = working_memory[self._processed_turn_count:]
+        for turn in new_turns:
+            if turn.role == "assistant":
+                # Already added when we received the assistant response.
+                continue
+            if turn.role == "user":
+                self._api_messages.append({
+                    "role": "user",
+                    "content": turn.content,
+                })
+            elif turn.role == "tool_observation":
+                # Correlate with most recent pending tool_use_id.
+                if self._pending_tool_use_id is not None:
+                    self._api_messages.append({
+                        "role": "user",
+                        "content": [{
+                            "type": "tool_result",
+                            "tool_use_id": self._pending_tool_use_id,
+                            "content": turn.content[:4000],  # bound size
+                        }],
+                    })
+                    self._pending_tool_use_id = None
+                else:
+                    # Synthesize as plain text — degraded but better than nothing.
+                    self._api_messages.append({
+                        "role": "user",
+                        "content": f"[tool_observation] {turn.content}",
+                    })
+        self._processed_turn_count = len(working_memory)
+
+    def _build_anthropic_tools(
+        self, tools: dict[str, ToolSpec],
+    ) -> list[dict[str, Any]]:
+        """Combine virtual tools (speak/ask/save/log/done) with real tools."""
         out = list(_VIRTUAL_TOOLS)
         for spec in tools.values():
             out.append({
@@ -258,104 +389,61 @@ class AIRuntimeAgentLLM:
             })
         return out
 
-    def _build_messages(
-        self, working_memory: list[Turn], session_summary: str,
-    ) -> list[dict[str, Any]]:
-        """Construct the messages array for Anthropic.
-
-        Strategy: replay working memory as alternating user/assistant turns;
-        prepend session_summary as an initial user message context block;
-        if there are no operator turns yet, emit a single bootstrap message.
-        """
-        msgs: list[dict[str, Any]] = []
-        if session_summary:
-            msgs.append({
-                "role": "user",
-                "content": "SESSION SUMMARY (so far):\n" + session_summary,
-            })
-
-        if not working_memory:
-            # Bootstrap turn: ask the LLM to open the conversation.
-            msgs.append({
-                "role": "user",
-                "content": (
-                    "[loop-bootstrap] No working memory yet. Open the conversation "
-                    "appropriately for this operator's situation (use durable memory "
-                    "to determine if this is a first-meet or a return). Emit a tool_use."
-                ),
-            })
-            return msgs
-
-        # Replay working memory. The AgentLLM loop semantics: the loop has
-        # already added the assistant's responses to working memory after
-        # they're emitted, so a faithful replay recreates the conversation
-        # on each turn.
-        for turn in working_memory:
-            if turn.role == "user":
-                msgs.append({"role": "user", "content": turn.content})
-            elif turn.role == "assistant":
-                msgs.append({"role": "assistant", "content": turn.content})
-            elif turn.role == "tool_observation":
-                # Tool observations become user-role context (Anthropic
-                # convention: tool_result blocks). Simplified to plain text
-                # here; richer multi-block tool_result wiring is deferred.
-                msgs.append({
-                    "role": "user",
-                    "content": f"[tool_observation] {turn.content}",
+    @staticmethod
+    def _content_to_dicts(content_blocks: Any) -> list[dict[str, Any]]:
+        """Convert Anthropic SDK content blocks to JSON-safe dicts so we
+        can stash them in api_messages and round-trip them on subsequent
+        API calls."""
+        out: list[dict[str, Any]] = []
+        for block in content_blocks or []:
+            block_type = getattr(block, "type", None)
+            if block_type == "text":
+                text = getattr(block, "text", "") or ""
+                if text:
+                    out.append({"type": "text", "text": text})
+            elif block_type == "tool_use":
+                out.append({
+                    "type": "tool_use",
+                    "id": getattr(block, "id", ""),
+                    "name": getattr(block, "name", ""),
+                    "input": getattr(block, "input", {}) or {},
                 })
+            # Other types (thinking, image, etc.) are dropped — the
+            # Conductor doesn't use them.
+        return out
 
-        # Anthropic requires the conversation to end on a user-role message
-        # before the next assistant turn. If the last working-memory turn
-        # was assistant, append a nudge.
-        if msgs and msgs[-1]["role"] == "assistant":
-            msgs.append({
-                "role": "user",
-                "content": "[loop-tick] Continue with the next decision.",
-            })
-        return msgs
+    def _parse_response_to_decisions(self, message: Any) -> list[AgentDecision]:
+        """Extract zero or more AgentDecisions from a model response.
 
-    def _parse_response(self, message: Any) -> AgentDecision:
-        """Extract a single AgentDecision from the Anthropic message.
-
-        Strategy: scan content blocks for the first tool_use; if none,
-        fall back to combining text content as a SpeakDecision.
+        Order: text blocks first (as SpeakDecision), then tool_uses.
+        This matches Anthropic's content-block ordering convention where
+        the model narrates BEFORE invoking tools.
         """
+        decisions: list[AgentDecision] = []
         content_blocks = list(getattr(message, "content", []) or [])
 
-        # Prefer tool_use blocks
+        # Collect all text first, then all tool_uses, in the order they
+        # appeared. We emit text blocks AS SpeakDecisions only when they
+        # have non-trivial content.
         for block in content_blocks:
             block_type = getattr(block, "type", None)
-            if block_type != "tool_use":
-                continue
-            tool_name = getattr(block, "name", "") or ""
-            tool_input = getattr(block, "input", {}) or {}
-            decision = self._tool_use_to_decision(tool_name, tool_input)
-            if decision is not None:
-                return decision
+            if block_type == "text":
+                text = (getattr(block, "text", "") or "").strip()
+                if text:
+                    decisions.append(SpeakDecision(text=text))
+            elif block_type == "tool_use":
+                tool_name = getattr(block, "name", "") or ""
+                tool_input = getattr(block, "input", {}) or {}
+                d = self._tool_use_to_decision(tool_name, tool_input)
+                if d is not None:
+                    decisions.append(d)
 
-        # No tool_use: fall back to plain-text speak
-        text_parts = [
-            getattr(b, "text", "")
-            for b in content_blocks
-            if getattr(b, "type", "") == "text" and getattr(b, "text", "")
-        ]
-        if text_parts:
-            return SpeakDecision(text="\n\n".join(text_parts).strip())
-
-        # Nothing extractable — end session rather than loop
-        log.warning(
-            "conductor_llm_empty_response",
-            extra={
-                "agent": "conductor_llm",
-                "stop_reason": getattr(message, "stop_reason", "unknown"),
-            },
-        )
-        return DoneDecision(reason="LLM returned no actionable content")
+        return decisions
 
     def _tool_use_to_decision(
         self, tool_name: str, tool_input: dict[str, Any],
     ) -> AgentDecision | None:
-        """Map a tool_use to one of the agent_loop AgentDecision shapes."""
+        """Map a tool_use block to one of the AgentDecision shapes."""
         rationale = tool_input.get("rationale")
 
         if tool_name == "speak":
@@ -399,7 +487,7 @@ class AIRuntimeAgentLLM:
         if tool_name == "done_for_now":
             return DoneDecision(reason=tool_input.get("reason"), rationale=rationale)
 
-        # Anything else is a real tool call
+        # Real tool call (anything not in _VIRTUAL_TOOL_NAMES)
         if tool_name and tool_name not in _VIRTUAL_TOOL_NAMES:
             return CallToolDecision(
                 tool=tool_name,
