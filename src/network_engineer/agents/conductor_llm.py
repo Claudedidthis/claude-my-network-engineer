@@ -391,41 +391,61 @@ class AIRuntimeAgentLLM:
     def _fold_working_memory_delta(self, working_memory: list[Turn]) -> None:
         """Walk new turns since last call; add user/tool_observation to api_messages.
 
-        Skip assistant turns — those are added at response-receive time.
+        TWO-PASS ORDERING (regression fix 2026-04-27 from a live 400 error):
+
+        Anthropic's API requires the message immediately after an assistant
+        message containing tool_use blocks to contain the matching
+        tool_result blocks. If the queue produced a multi-decision response
+        (text + tool_use), the operator may have interjected during the
+        speak BEFORE the queued tool ran. In working_memory order that's
+        [assistant_speak, user_interjection, tool_observation]. Folding
+        them in working-memory order would produce
+        [user: "interjection", user: tool_result] — and the API rejects
+        with 400 because the first message after the tool_use must contain
+        the tool_result.
+
+        Fix: pass 1 emits tool_result blocks for every tool_observation
+        (correlated FIFO with pending tool_use_ids). Pass 2 emits any
+        other user-role content. The model sees: I emitted a tool_use,
+        the tool ran, now there's also some operator input.
+
+        Assistant turns from working memory are always skipped — they're
+        added to api_messages at response-receive time with full content
+        blocks (text + tool_use preserved).
         """
         new_turns = working_memory[self._processed_turn_count:]
+
+        # Pass 1: tool_observations → tool_result user messages
         for turn in new_turns:
-            if turn.role == "assistant":
-                # Already added when we received the assistant response.
+            if turn.role != "tool_observation":
                 continue
+            if self._pending_tool_use_ids:
+                use_id = self._pending_tool_use_ids.pop(0)
+                self._api_messages.append({
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": use_id,
+                        "content": turn.content[:8000],
+                    }],
+                })
+            else:
+                # No pending id — synthesize as plain text. Degraded
+                # but better than crashing.
+                self._api_messages.append({
+                    "role": "user",
+                    "content": f"[tool_observation] {turn.content}",
+                })
+
+        # Pass 2: other user-role turns (interjections, ask replies)
+        for turn in new_turns:
             if turn.role == "user":
                 self._api_messages.append({
                     "role": "user",
                     "content": turn.content,
                 })
-            elif turn.role == "tool_observation":
-                # Pop the oldest pending tool_use_id (FIFO) so multi-tool-use
-                # responses correlate correctly. Without this, the second
-                # tool's observation falls to the synthesize-as-text path
-                # and the model retries — same shape as the runaway-snapshot
-                # bug.
-                if self._pending_tool_use_ids:
-                    use_id = self._pending_tool_use_ids.pop(0)
-                    self._api_messages.append({
-                        "role": "user",
-                        "content": [{
-                            "type": "tool_result",
-                            "tool_use_id": use_id,
-                            "content": turn.content[:8000],
-                        }],
-                    })
-                else:
-                    # No pending id — synthesize as plain text. Degraded
-                    # but better than crashing.
-                    self._api_messages.append({
-                        "role": "user",
-                        "content": f"[tool_observation] {turn.content}",
-                    })
+            # assistant turns are skipped — captured at response-receive time
+
         self._processed_turn_count = len(working_memory)
 
     def _build_anthropic_tools(

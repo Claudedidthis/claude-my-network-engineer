@@ -417,6 +417,127 @@ def test_two_tool_uses_in_one_response_correlate_via_fifo_queue() -> None:
     assert "lutron" in tool_results[1]["content"]
 
 
+def test_interjection_during_queued_tool_use_does_not_break_anthropic_ordering() -> None:
+    """REGRESSION (caught by live operator session 2026-04-27, 400 Bad Request):
+    when the model emits [text + tool_use] in one response, the SpeakDecision
+    fires first, the operator interjects during the pause, and then the queued
+    CallToolDecision runs. The resulting working_memory order is
+    [assistant_speak, user_interjection, tool_observation]. If the fold appends
+    these in working-memory order, the user_interjection lands between the
+    assistant's tool_use and the tool_result — Anthropic 400's because the
+    message after a tool_use MUST contain the matching tool_result block.
+
+    Two-pass fold fixes: tool_observations get folded as tool_result blocks
+    FIRST, then other user turns. Order in api_messages becomes:
+        [assistant: [text, tool_use], user: tool_result, user: interjection]
+    """
+    class _SequencedMessages:
+        def __init__(self, responses):
+            self.responses = list(responses)
+            self.calls = 0
+            self.last_kwargs = None
+
+        def create(self, **kwargs):
+            self.last_kwargs = kwargs
+            r = self.responses[min(self.calls, len(self.responses) - 1)]
+            self.calls += 1
+            return r
+
+    # Multi-block response on call 1: text + tool_use
+    seq = _SequencedMessages([
+        _FakeMessage([
+            _FakeBlock(type="text", text="Let me check the network."),
+            _FakeBlock(type="tool_use", name="audit_network", id="toolu_audit_1", input={}),
+        ]),
+        _FakeMessage([
+            _FakeBlock(type="tool_use", name="done_for_now", input={}),
+        ]),
+    ])
+    fake_anthropic = type("X", (), {"messages": seq})()
+    from network_engineer.agents.ai_runtime import AIRuntime
+    runtime = AIRuntime(enabled=True, client=fake_anthropic)
+    llm = AIRuntimeAgentLLM(runtime)
+
+    # Decide 1: returns SpeakDecision; CallToolDecision queued.
+    d1 = llm.decide(
+        system_prompt="(test)", working_memory=[],
+        session_summary="", durable_subset="", tools={},
+    )
+    assert isinstance(d1, SpeakDecision)
+
+    # Loop simulates: speak fires, assistant turn echoed, operator interjects.
+    wm_after_interject = [
+        Turn(role="assistant", content="Let me check the network."),
+        Turn(role="user", content="sure go do that"),
+    ]
+
+    # Decide 2: drains queue (CallToolDecision); does NOT call API.
+    d2 = llm.decide(
+        system_prompt="(test)", working_memory=wm_after_interject,
+        session_summary="", durable_subset="", tools={},
+    )
+    assert isinstance(d2, CallToolDecision)
+    assert d2.tool == "audit_network"
+
+    # Loop runs the tool, observation lands.
+    wm_after_tool = wm_after_interject + [
+        Turn(role="tool_observation", content="audit_network(...) → 5 findings"),
+    ]
+
+    # Decide 3: real API call. Must include tool_result IMMEDIATELY after the
+    # assistant tool_use, with the interjection as a follow-up user message.
+    d3 = llm.decide(
+        system_prompt="(test)", working_memory=wm_after_tool,
+        session_summary="", durable_subset="", tools={},
+    )
+    assert isinstance(d3, DoneDecision)
+
+    # Inspect ordering of the messages sent on this final call
+    msgs = seq.last_kwargs["messages"]
+
+    # Find the assistant message containing the tool_use
+    tool_use_idx = None
+    for i, m in enumerate(msgs):
+        if m["role"] != "assistant":
+            continue
+        content = m["content"]
+        if not isinstance(content, list):
+            continue
+        if any(isinstance(b, dict) and b.get("type") == "tool_use" for b in content):
+            tool_use_idx = i
+            break
+    assert tool_use_idx is not None, "expected an assistant message with tool_use"
+
+    # The very next message MUST be user-role with tool_result
+    next_msg = msgs[tool_use_idx + 1]
+    assert next_msg["role"] == "user", (
+        f"expected user-role message after tool_use; got {next_msg['role']}. "
+        "If this fails, the API will 400 at runtime — exactly the bug this "
+        "test exists to catch."
+    )
+    assert isinstance(next_msg["content"], list), (
+        "expected next message's content to be a list with tool_result block"
+    )
+    assert any(
+        isinstance(b, dict) and b.get("type") == "tool_result"
+        and b.get("tool_use_id") == "toolu_audit_1"
+        for b in next_msg["content"]
+    ), "expected a tool_result block matching the assistant's tool_use_id"
+
+    # The interjection ("sure go do that") should appear in a SUBSEQUENT
+    # user message, after the tool_result one.
+    after_tool_result = msgs[tool_use_idx + 2:]
+    interjection_messages = [
+        m for m in after_tool_result
+        if m["role"] == "user" and isinstance(m["content"], str)
+        and "sure go do that" in m["content"]
+    ]
+    assert interjection_messages, (
+        "expected the operator interjection 'sure go do that' to appear "
+        "in a user message AFTER the tool_result block"
+    )
+
+
 def test_api_messages_are_capped_at_max() -> None:
     """REGRESSION (caught by code-review 2026-04-27): _api_messages was
     unbounded. Long sessions would blow the model's context window. The
