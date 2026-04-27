@@ -1,8 +1,9 @@
 """nye — the ClaudeMyNetworkEngineer command-line entry point.
 
-Subcommands route to agents in src/network_engineer/agents/. In Phase 0 this is a
-scaffold; commands print a not-yet-implemented message until the relevant phase
-in docs/build-plan.md lands.
+Per docs/agent_architecture.md §12.8 (decided 2026-04-26): bare `nye` drops
+into the Conductor REPL — the LLM-driven conversational agent. Existing
+subcommands (audit, monitor, optimize, security, etc.) survive as
+ergonomic shortcuts but the primary interaction surface is the Conductor.
 """
 
 from __future__ import annotations
@@ -327,13 +328,54 @@ def _cmd_test(args: argparse.Namespace) -> int:
         return 1
 
 
+def _cmd_chat(args: argparse.Namespace) -> int:
+    """Drop into the Conductor REPL. Bare `nye` invokes this implicitly."""
+    from network_engineer.agents.conductor import Conductor, ConductorConfig
+    from network_engineer.agents.ai_runtime import AIRuntime
+    from network_engineer.tools.unifi_client import UnifiClient, UnifiClientError
+
+    # Optional UnifiClient — Conductor handles None gracefully (will ask
+    # the operator about connection in the bootstrap conversation).
+    try:
+        client = UnifiClient()
+    except (UnifiClientError, KeyError, RuntimeError):
+        client = None
+
+    ai = AIRuntime()
+    config = ConductorConfig(
+        model_alias=getattr(args, "model", "sonnet") or "sonnet",
+        max_turns=getattr(args, "max_turns", 100),
+    )
+    conductor = Conductor(config=config, ai_runtime=ai, unifi_client=client)
+    conductor.run()
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="nye",
-        description="ClaudeMyNetworkEngineer — an AI-powered network engineer for UniFi.",
+        description="ClaudeMyNetworkEngineer — an AI-powered network engineer for UniFi.\n\n"
+                    "Run with no subcommand to drop into the Conductor REPL.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"nye {__version__}")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    # Bare `nye` drops into Conductor — subcommand no longer required.
+    subparsers = parser.add_subparsers(dest="command", required=False)
+
+    # ── chat — explicit Conductor entry point ────────────────────────────
+    chat_p = subparsers.add_parser(
+        "chat",
+        help="Drop into the Conductor REPL (the default for bare `nye`)",
+    )
+    chat_p.add_argument(
+        "--model", choices=["sonnet", "opus", "haiku"], default="sonnet",
+        help="Model alias to use for agent turns (default: sonnet)",
+    )
+    chat_p.add_argument(
+        "--max-turns", type=int, default=100,
+        help="Maximum turns before the loop exhausts (default: 100)",
+    )
+    chat_p.set_defaults(func=_cmd_chat)
 
     test_p = subparsers.add_parser("test", help="Verify UniFi connectivity and print a summary")
     test_p.add_argument(
@@ -425,6 +467,10 @@ def main() -> int:
 
     args = parser.parse_args()
     configure_logging()
+
+    # Bare `nye` (no subcommand) drops into the Conductor REPL.
+    if args.command is None:
+        return _cmd_chat(args)
 
     if hasattr(args, "func"):
         return args.func(args)
