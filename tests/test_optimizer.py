@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from network_engineer.agents.optimizer import (
+from network_engineer.tools.optimizer import (
     OptimizerError,
     apply_change,
     rename_device,
@@ -521,7 +521,7 @@ def test_live_rename_and_restore() -> None:
     skips cleanly when not configured, so it never produces false failures
     from a hardcoded device name.
     """
-    from network_engineer.agents.optimizer import rename_device
+    from network_engineer.tools.optimizer import rename_device
     from network_engineer.tools.unifi_client import UnifiClient
 
     client = UnifiClient(use_fixtures=False)

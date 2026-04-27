@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from network_engineer.agents.ai_runtime import AIRuntime
-from network_engineer.agents.upgrade_agent import (
+from network_engineer.tools.upgrade_agent import (
     _scan_with_data,
     load_catalog,
     render_markdown,

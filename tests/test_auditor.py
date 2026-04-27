@@ -9,7 +9,7 @@ import os
 
 import pytest
 
-from network_engineer.agents.auditor import run
+from network_engineer.tools.auditor import run
 from network_engineer.tools.schemas import Finding, Severity
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -354,7 +354,7 @@ _LIVE = pytest.mark.skipif(
 
 @_LIVE
 def test_live_audit_produces_findings() -> None:
-    from network_engineer.agents.auditor import run_from_client
+    from network_engineer.tools.auditor import run_from_client
     from network_engineer.tools.unifi_client import UnifiClient
 
     client = UnifiClient(use_fixtures=False)
@@ -377,7 +377,7 @@ def test_live_audit_no_unrationalized_high_severity_port_forwards() -> None:
     Replaces the prior `finds FTP port forward` assertion which was tied to
     pre-cleanup state and went stale once the forwards were removed.
     """
-    from network_engineer.agents.auditor import run_from_client
+    from network_engineer.tools.auditor import run_from_client
     from network_engineer.tools.unifi_client import UnifiClient
 
     client = UnifiClient(use_fixtures=False)

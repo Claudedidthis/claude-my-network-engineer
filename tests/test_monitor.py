@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from network_engineer.agents.monitor import run
+from network_engineer.tools.monitor import run
 from network_engineer.tools.schemas import NetworkEvent, Severity
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -340,7 +340,7 @@ _LIVE = pytest.mark.skipif(
 
 @_LIVE
 def test_live_monitor_sweep() -> None:
-    from network_engineer.agents.monitor import run_from_client
+    from network_engineer.tools.monitor import run_from_client
     from network_engineer.tools.unifi_client import UnifiClient
 
     client = UnifiClient(use_fixtures=False)

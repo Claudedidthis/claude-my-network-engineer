@@ -19,7 +19,7 @@ _SEVERITY_ICON = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "
 
 
 def _cmd_audit(args: argparse.Namespace) -> int:
-    from network_engineer.agents.auditor import run_from_client
+    from network_engineer.tools.auditor import run_from_client
     from network_engineer.tools.unifi_client import UnifiClient, UnifiClientError
 
     try:
@@ -55,8 +55,8 @@ def _cmd_audit(args: argparse.Namespace) -> int:
 
 
 def _cmd_report(args: argparse.Namespace) -> int:
-    from network_engineer.agents.auditor import run_from_client
-    from network_engineer.agents.reporter import audit_report, changes_report, daily_report
+    from network_engineer.tools.auditor import run_from_client
+    from network_engineer.tools.reporter import audit_report, changes_report, daily_report
     from network_engineer.tools.unifi_client import UnifiClient, UnifiClientError
 
     kind = args.type
@@ -85,7 +85,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
 
 
 def _cmd_upgrade(args: argparse.Namespace) -> int:
-    from network_engineer.agents.upgrade_agent import render_markdown, scan, to_json_log_format
+    from network_engineer.tools.upgrade_agent import render_markdown, scan, to_json_log_format
     from network_engineer.tools.unifi_client import UnifiClient, UnifiClientError
 
     try:
@@ -253,7 +253,7 @@ def _cmd_ai(args: argparse.Namespace) -> int:
 
 
 def _cmd_optimize(args: argparse.Namespace) -> int:
-    from network_engineer.agents.optimizer import (
+    from network_engineer.tools.optimizer import (
         OptimizerError,
         rename_device,
         resolve_channel_conflicts,
@@ -293,7 +293,7 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
 
 
 def _cmd_monitor(args: argparse.Namespace) -> int:
-    from network_engineer.agents.monitor import _print_sweep, run_from_client, watch
+    from network_engineer.tools.monitor import _print_sweep, run_from_client, watch
     from network_engineer.tools.unifi_client import UnifiClient, UnifiClientError
 
     try:

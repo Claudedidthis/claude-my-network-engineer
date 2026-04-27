@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from network_engineer.agents.reporter import audit_report, changes_report, daily_report
+from network_engineer.tools.reporter import audit_report, changes_report, daily_report
 from network_engineer.tools.schemas import Finding, Severity
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -151,7 +151,7 @@ def test_daily_report_no_changes_message(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Daily report shows the 'no changes' message when the action log is empty."""
-    import network_engineer.agents.reporter as rmod
+    import network_engineer.tools.reporter as rmod
     monkeypatch.setattr(rmod, "_ACTION_LOG", tmp_path / "empty.log")
     report = daily_report([], _net_info())
     assert "No agent-applied changes" in report
@@ -166,7 +166,7 @@ def test_daily_report_has_date() -> None:
 # ── changes_report ────────────────────────────────────────────────────────────
 
 def test_changes_report_no_log_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import network_engineer.agents.reporter as rmod
+    import network_engineer.tools.reporter as rmod
     monkeypatch.setattr(rmod, "_ACTION_LOG", tmp_path / "nonexistent.log")
     report = changes_report()
     assert "No agent activity" in report
@@ -175,7 +175,7 @@ def test_changes_report_no_log_file(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 def test_changes_report_with_applied_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import network_engineer.agents.reporter as rmod
+    import network_engineer.tools.reporter as rmod
 
     log_file = tmp_path / "agent_actions.log"
     ts = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
@@ -198,7 +198,7 @@ def test_changes_report_with_applied_entry(
 def test_changes_report_with_refused_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import network_engineer.agents.reporter as rmod
+    import network_engineer.tools.reporter as rmod
 
     log_file = tmp_path / "agent_actions.log"
     ts = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
@@ -221,7 +221,7 @@ def test_changes_report_with_refused_entry(
 def test_changes_report_filters_old_entries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import network_engineer.agents.reporter as rmod
+    import network_engineer.tools.reporter as rmod
 
     log_file = tmp_path / "agent_actions.log"
     old_ts = (datetime.now(UTC) - timedelta(days=10)).isoformat()
@@ -249,7 +249,7 @@ _LIVE = pytest.mark.skipif(
 
 @_LIVE
 def test_live_daily_report() -> None:
-    from network_engineer.agents.auditor import run_from_client
+    from network_engineer.tools.auditor import run_from_client
     from network_engineer.tools.unifi_client import UnifiClient
 
     client = UnifiClient(use_fixtures=False)
@@ -264,7 +264,7 @@ def test_live_daily_report() -> None:
 
 @_LIVE
 def test_live_audit_report() -> None:
-    from network_engineer.agents.auditor import run_from_client
+    from network_engineer.tools.auditor import run_from_client
     from network_engineer.tools.unifi_client import UnifiClient
 
     client = UnifiClient(use_fixtures=False)
