@@ -188,7 +188,10 @@ class AIRuntimeAgentLLM:
       _decision_queue         Multi-block responses (text + tool_use)
                               produce multiple decisions; the loop drains
                               them one per call.
-      _processed_turn_count   Working-memory delta tracker.
+      _folded_turn_ids        Set of working_memory turn_ids already
+                              folded into _api_messages. Tracked by id
+                              (not by index) because WorkingMemory.recent()
+                              truncates to max_turns.
 
     Memory-bound invariant: _api_messages is capped at _MAX_API_MESSAGES
     entries; once exceeded, the oldest non-bootstrap pair is dropped.
@@ -223,9 +226,16 @@ class AIRuntimeAgentLLM:
         # Decisions extracted from a multi-block response, queued for the
         # loop to consume one at a time.
         self._decision_queue: list[AgentDecision] = []
-        # How many turns of working_memory we've already folded into
-        # _api_messages — incremented as we consume the delta.
-        self._processed_turn_count: int = 0
+        # turn_ids of working_memory turns we've already folded into
+        # _api_messages. Tracking by id (not by index) is robust against
+        # WorkingMemory.max_turns truncation — once the session crosses the
+        # working-memory window, an integer index would point past the
+        # truncated list and silently miss every new tool_observation,
+        # causing real tool_uses to get "(tool result missing)" placeholders
+        # in the immediately-following user message. (Bug seen 2026-04-27:
+        # cite_corpus and record_caution_marker both lost their results
+        # mid-audit, then the model emitted empty responses.)
+        self._folded_turn_ids: set[str] = set()
 
     def decide(
         self,
@@ -371,6 +381,18 @@ class AIRuntimeAgentLLM:
                     "debug_log": "logs/conductor_debug.jsonl",
                 },
             )
+
+            # Classify the failure so the operator gets a clean human message
+            # instead of a stack trace + opaque DoneDecision. The friendly
+            # speak is queued ahead of a DoneDecision so the loop renders the
+            # message, then exits cleanly on the next decide() tick.
+            classification = _classify_api_error(exc, error_body)
+            if classification is not None:
+                category, friendly = classification
+                self._decision_queue.append(
+                    DoneDecision(reason=f"API error: {category}"),
+                )
+                return SpeakDecision(text=friendly)
             return DoneDecision(reason=f"LLM API error: {exc.__class__.__name__}")
 
         # Append the assistant response to our message history (full
@@ -382,12 +404,20 @@ class AIRuntimeAgentLLM:
             "content": assistant_content,
         })
 
+        usage = getattr(message, "usage", None)
         _debug_log("api_response_received", {
             "model": model_id,
             "stop_reason": getattr(message, "stop_reason", "?"),
             "assistant_content": assistant_content,
-            "input_tokens": getattr(getattr(message, "usage", None), "input_tokens", None),
-            "output_tokens": getattr(getattr(message, "usage", None), "output_tokens", None),
+            "input_tokens": getattr(usage, "input_tokens", None),
+            "output_tokens": getattr(usage, "output_tokens", None),
+            # Prompt-cache visibility: cache_creation_input_tokens means we
+            # paid the full price to seed a cache block; cache_read_input_tokens
+            # means we hit one and got the 90% discount. Reading these across
+            # turns is how we verify the system_prompt + tool list are
+            # actually being cached, vs. silently re-billed every turn.
+            "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", None),
+            "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", None),
         })
 
         # Parse the response into one or more AgentDecisions.
@@ -456,9 +486,14 @@ class AIRuntimeAgentLLM:
                 kind = "virtual" if bname in _VIRTUAL_TOOL_NAMES else "real"
                 self._pending_tool_uses.append((use_id, bname, kind))
 
+            retry_usage = getattr(retry_message, "usage", None)
             _debug_log("empty_response_retry_response", {
                 "stop_reason": getattr(retry_message, "stop_reason", "?"),
                 "assistant_content": retry_content,
+                "input_tokens": getattr(retry_usage, "input_tokens", None),
+                "output_tokens": getattr(retry_usage, "output_tokens", None),
+                "cache_creation_input_tokens": getattr(retry_usage, "cache_creation_input_tokens", None),
+                "cache_read_input_tokens": getattr(retry_usage, "cache_read_input_tokens", None),
             })
 
             decisions = self._parse_response_to_decisions(retry_message)
@@ -544,8 +579,12 @@ class AIRuntimeAgentLLM:
           2. Text blocks for any operator user turns (interjections,
              ask replies).
         """
-        new_turns = working_memory[self._processed_turn_count:]
-        self._processed_turn_count = len(working_memory)
+        new_turns: list[Turn] = []
+        for t in working_memory:
+            if t.turn_id in self._folded_turn_ids:
+                continue
+            new_turns.append(t)
+            self._folded_turn_ids.add(t.turn_id)
 
         # Separate user turns and tool observations from the delta.
         observations = [t for t in new_turns if t.role == "tool_observation"]
@@ -753,6 +792,78 @@ class AIRuntimeAgentLLM:
                 rationale=rationale,
             )
         return None
+
+
+def _classify_api_error(
+    exc: Exception, error_body: Any,
+) -> tuple[str, str] | None:
+    """Map an Anthropic SDK exception to (category, operator-friendly message).
+
+    Returns None when the failure isn't one we want to surface specially —
+    the caller falls back to the generic DoneDecision. Categories:
+
+      workspace_limit  — the spending cap on the workspace. Resets on a
+                         fixed date the operator controls in the console.
+      rate_limit       — RPM/TPM throttle. Almost always transient.
+      billing          — no credit / payment failed; needs operator action.
+      auth             — invalid / missing API key.
+      overloaded       — Anthropic-side capacity. Try again in a minute.
+
+    The friendly message is what the operator will read as a `speak` block,
+    so it should be conversational, lead with the cause, and end with the
+    one specific action that unblocks them.
+    """
+    error_class = exc.__class__.__name__
+    error_str = str(exc)
+    body_msg = ""
+    if isinstance(error_body, dict):
+        err_block = error_body.get("error") or {}
+        if isinstance(err_block, dict):
+            body_msg = str(err_block.get("message") or "")
+    haystack = f"{error_class} {error_str} {body_msg}".lower()
+
+    if "workspace" in haystack and "usage limits" in haystack:
+        # The body almost always contains the reset date — surface it
+        # verbatim so the operator doesn't have to dig through logs.
+        reset_hint = ""
+        if "regain access" in body_msg.lower():
+            tail = body_msg[body_msg.lower().find("regain access"):]
+            reset_hint = f" {tail.strip().rstrip('.')}."
+        return (
+            "workspace_limit",
+            "Heads up — I just hit the Anthropic workspace API spending limit "
+            "for this account, so I'll have to stop here." + reset_hint
+            + " To raise the cap immediately, go to console.anthropic.com → "
+            "Settings → Limits. Your conversation state is saved; we can pick "
+            "up where we left off next time.",
+        )
+    if "rate_limit" in haystack or "rate limit" in haystack:
+        return (
+            "rate_limit",
+            "I just hit an Anthropic rate limit (requests-per-minute or "
+            "tokens-per-minute). Give it about a minute and start me again. "
+            "If this keeps happening, your tier may need an upgrade.",
+        )
+    if "credit" in haystack or "billing" in haystack or "payment" in haystack:
+        return (
+            "billing",
+            "There's a billing issue on the Anthropic account — most often a "
+            "depleted credit balance or a failed card. Sort it at "
+            "console.anthropic.com → Billing and we'll pick this up after.",
+        )
+    if error_class == "AuthenticationError" or "authentication" in haystack:
+        return (
+            "auth",
+            "My Anthropic API key isn't valid — either missing, expired, or "
+            "revoked. Check ANTHROPIC_API_KEY in your .env file.",
+        )
+    if "overloaded" in haystack or error_class == "InternalServerError":
+        return (
+            "overloaded",
+            "Anthropic's API is overloaded right now (this is on their side, "
+            "not yours). Try again in a minute or two.",
+        )
+    return None
 
 
 def _virtual_synth_result(tool_name: str) -> str:

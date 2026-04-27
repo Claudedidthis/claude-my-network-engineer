@@ -496,6 +496,164 @@ def test_two_tool_uses_in_one_response_correlate_via_fifo_queue() -> None:
     assert "lutron" in tool_results[1]["content"]
 
 
+def test_workspace_limit_error_emits_friendly_speak_then_done() -> None:
+    """REGRESSION (caught by live session 2026-04-27 right after the operator
+    typed YES on a Guest-VLAN approval): Anthropic returned 400 with
+    "You have reached your specified workspace API usage limits. You will
+    regain access on 2026-05-01 at 00:00 UTC." The generic exception
+    handler returned DoneDecision with a stack-trace-shaped reason and the
+    operator saw nothing actionable — just the session ending.
+
+    The classifier should now detect workspace-limit errors specifically
+    and queue a SpeakDecision (with reset date + console link) ahead of
+    the DoneDecision so the operator gets a clear human message before the
+    loop exits."""
+    from anthropic import BadRequestError  # type: ignore
+
+    class _RaisingMessages:
+        def __init__(self) -> None:
+            self.last_kwargs = None
+
+        def create(self, **kwargs):
+            self.last_kwargs = kwargs
+            # Construct a BadRequestError that mirrors the live failure
+            # body verbatim — same shape the operator hit.
+            body = {
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": (
+                        "You have reached your specified workspace API "
+                        "usage limits. You will regain access on "
+                        "2026-05-01 at 00:00 UTC."
+                    ),
+                },
+                "request_id": "req_test_workspace_limit",
+            }
+            # Build a minimal exception that exposes .body — that's what
+            # the classifier reads. The SDK's BadRequestError signature
+            # varies by version; we use the simplest shape that matches.
+            exc = BadRequestError.__new__(BadRequestError)
+            exc.body = body
+            exc.message = body["error"]["message"]
+            exc.args = (body["error"]["message"],)
+            raise exc
+
+    fake = type("X", (), {"messages": _RaisingMessages()})()
+    from network_engineer.agents.ai_runtime import AIRuntime
+    runtime = AIRuntime(enabled=True, client=fake)
+    llm = AIRuntimeAgentLLM(runtime)
+
+    # First decide(): API raises → classifier kicks in → SpeakDecision with
+    # the friendly message; DoneDecision is queued for the next call.
+    d1 = llm.decide(
+        system_prompt="(t)", working_memory=[],
+        session_summary="", durable_subset="", tools={},
+    )
+    assert isinstance(d1, SpeakDecision), f"expected SpeakDecision, got {type(d1).__name__}"
+    assert "workspace" in d1.text.lower()
+    assert "console.anthropic.com" in d1.text.lower()
+    # Reset date must be surfaced verbatim from Anthropic's body, not lost.
+    assert "2026-05-01" in d1.text
+
+    # Second decide(): drains the queue — DoneDecision lands so the loop exits.
+    d2 = llm.decide(
+        system_prompt="(t)", working_memory=[],
+        session_summary="", durable_subset="", tools={},
+    )
+    assert isinstance(d2, DoneDecision)
+    assert "workspace_limit" in (d2.reason or "")
+
+
+def test_fold_handles_working_memory_truncation_via_turn_id_tracking() -> None:
+    """REGRESSION (caught by live session 2026-04-27, "tool result missing"
+    placeholders mid-audit then empty model responses): the fold tracked
+    processed turns by INTEGER INDEX into the working_memory list. But
+    WorkingMemory.recent() truncates to max_turns — once the session crossed
+    the 12-turn cap, _processed_turn_count was greater than len(working_memory),
+    `working_memory[_processed_turn_count:]` returned empty, no observations
+    were folded, and every subsequent real tool_use got the
+    "(tool result missing)" defensive placeholder. The model saw the
+    placeholders and went silent.
+
+    Fix: track folded turn_ids in a set. Turn already carries a uuid that's
+    stable across truncation, so newly-arrived turns are correctly identified
+    even when the window has rolled."""
+    class _SequencedMessages:
+        def __init__(self, responses):
+            self.responses = list(responses)
+            self.calls = 0
+            self.last_kwargs = None
+
+        def create(self, **kwargs):
+            self.last_kwargs = kwargs
+            r = self.responses[min(self.calls, len(self.responses) - 1)]
+            self.calls += 1
+            return r
+
+    seq = _SequencedMessages([
+        _FakeMessage([
+            _FakeBlock(type="tool_use", name="tool_a", id="toolu_a", input={}),
+        ]),
+        _FakeMessage([
+            _FakeBlock(type="tool_use", name="tool_b", id="toolu_b", input={}),
+        ]),
+        _FakeMessage([
+            _FakeBlock(type="tool_use", name="done_for_now", input={}),
+        ]),
+    ])
+    fake = type("X", (), {"messages": seq})()
+    from network_engineer.agents.ai_runtime import AIRuntime
+    runtime = AIRuntime(enabled=True, client=fake)
+    llm = AIRuntimeAgentLLM(runtime)
+
+    # Cycle 1: bootstrap. working_memory empty.
+    d1 = llm.decide(
+        system_prompt="(t)", working_memory=[],
+        session_summary="", durable_subset="", tools={},
+    )
+    assert isinstance(d1, CallToolDecision) and d1.tool == "tool_a"
+
+    # Cycle 2: obs_a is now in working_memory. Fold pairs it with toolu_a.
+    obs_a = Turn(role="tool_observation", content="tool_a(...) → A")
+    d2 = llm.decide(
+        system_prompt="(t)", working_memory=[obs_a],
+        session_summary="", durable_subset="", tools={},
+    )
+    assert isinstance(d2, CallToolDecision) and d2.tool == "tool_b"
+
+    # Cycle 3: simulate truncation — obs_a has rolled out of the window,
+    # only obs_b is visible. With the index-based tracker this would skip
+    # obs_b entirely and emit "(tool result missing)" for toolu_b.
+    obs_b = Turn(role="tool_observation", content="tool_b(...) → B")
+    d3 = llm.decide(
+        system_prompt="(t)", working_memory=[obs_b],
+        session_summary="", durable_subset="", tools={},
+    )
+    assert isinstance(d3, DoneDecision)
+
+    # Inspect the messages sent on the third API call. The tool_result for
+    # toolu_b must carry the actual observation, NOT the missing-placeholder.
+    msgs = seq.last_kwargs["messages"]
+    tool_results = []
+    for m in msgs:
+        if m["role"] != "user":
+            continue
+        content = m["content"]
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    tool_results.append(block)
+
+    by_id = {r["tool_use_id"]: r["content"] for r in tool_results}
+    assert "toolu_b" in by_id, "expected tool_result block for toolu_b"
+    assert "tool result missing" not in str(by_id["toolu_b"]), (
+        f"toolu_b got the defensive missing-placeholder despite obs_b "
+        f"being present in working_memory: {by_id['toolu_b']!r}"
+    )
+    assert "tool_b" in str(by_id["toolu_b"])
+
+
 def test_interjection_during_queued_tool_use_does_not_break_anthropic_ordering() -> None:
     """REGRESSION (caught by live operator session 2026-04-27, 400 Bad Request):
     when the model emits [text + tool_use] in one response, the SpeakDecision
