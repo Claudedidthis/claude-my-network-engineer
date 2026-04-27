@@ -39,6 +39,10 @@ from network_engineer.tools.agent_loop import (
     WorkingMemory,
     run_agent,
 )
+from network_engineer.tools.conductor_debug import (
+    log_event as _debug_log,
+    set_session_id as _debug_set_session,
+)
 from network_engineer.tools.durable_memory import DurableMemory
 from network_engineer.tools.logging_setup import get_logger
 
@@ -104,6 +108,16 @@ class Conductor:
             on_say = on_say or renderer.on_say
             on_status = on_status or renderer.on_status
             on_user_input = on_user_input or renderer.on_user_input
+
+        # Wire the debug-log session id BEFORE anything else so every event
+        # carries the same session_id for grep-able log slicing.
+        _debug_set_session(self.session_id)
+        _debug_log("session_start", {
+            "ai_enabled": self.ai.enabled,
+            "client_mode": getattr(self.client, "_mode", None),
+            "model_alias": self.config.model_alias,
+            "max_turns": self.config.max_turns,
+        })
 
         log.info(
             "conductor_session_start",

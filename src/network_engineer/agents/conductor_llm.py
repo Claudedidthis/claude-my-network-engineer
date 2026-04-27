@@ -69,6 +69,10 @@ from network_engineer.tools.agent_loop import (
     ToolSpec,
     Turn,
 )
+from network_engineer.tools.conductor_debug import (
+    log_event as _debug_log,
+    truncate_messages_for_log,
+)
 
 log = logging.getLogger("agents.conductor_llm")
 
@@ -279,6 +283,19 @@ class AIRuntimeAgentLLM:
             )
             model_id = self.ai._config["models"].get("sonnet", "claude-sonnet-4-6")
 
+        # Log the full request payload BEFORE the call. If the API rejects,
+        # this is the trace I read to diagnose. After every successful
+        # call this also gets logged so I can see what the model saw.
+        _debug_log("api_request_pre_call", {
+            "model": model_id,
+            "messages_count": len(self._api_messages),
+            "messages": truncate_messages_for_log(self._api_messages),
+            "tools_count": len(anthropic_tools),
+            "tool_names": [t.get("name") for t in anthropic_tools],
+            "max_tokens": self.max_tokens,
+            "pending_tool_use_ids": list(self._pending_tool_use_ids),
+        })
+
         try:
             message = self.ai._client.messages.create(
                 model=model_id,
@@ -302,6 +319,41 @@ class AIRuntimeAgentLLM:
                 tools=anthropic_tools,
             )
         except Exception as exc:
+            # Capture EVERYTHING about the failure — request payload, the
+            # exception class, the response body if Anthropic gave us one
+            # (BadRequestError exposes .body and .response on most SDK
+            # versions). This is the data I need to debug the next 400.
+            error_body = None
+            response_text = None
+            response_status = None
+            try:
+                body = getattr(exc, "body", None)
+                if body is not None:
+                    error_body = body if isinstance(body, (dict, str)) else repr(body)[:2000]
+            except Exception:
+                pass
+            try:
+                resp = getattr(exc, "response", None)
+                if resp is not None:
+                    response_text = getattr(resp, "text", None)
+                    if response_text and len(response_text) > 4000:
+                        response_text = response_text[:4000] + "...[truncated]"
+                    response_status = getattr(resp, "status_code", None)
+            except Exception:
+                pass
+
+            _debug_log("api_request_failed", {
+                "model": model_id,
+                "error_type": exc.__class__.__name__,
+                "error_str": str(exc)[:2000],
+                "response_status": response_status,
+                "response_text": response_text,
+                "error_body": error_body,
+                "messages_count": len(self._api_messages),
+                "messages": truncate_messages_for_log(self._api_messages),
+                "pending_tool_use_ids": list(self._pending_tool_use_ids),
+            })
+
             log.error(
                 "conductor_llm_api_error",
                 extra={
@@ -309,6 +361,7 @@ class AIRuntimeAgentLLM:
                     "model": model_id,
                     "error": str(exc),
                     "error_type": exc.__class__.__name__,
+                    "debug_log": "logs/conductor_debug.jsonl",
                 },
             )
             return DoneDecision(reason=f"LLM API error: {exc.__class__.__name__}")
@@ -320,6 +373,14 @@ class AIRuntimeAgentLLM:
         self._api_messages.append({
             "role": "assistant",
             "content": assistant_content,
+        })
+
+        _debug_log("api_response_received", {
+            "model": model_id,
+            "stop_reason": getattr(message, "stop_reason", "?"),
+            "assistant_content": assistant_content,
+            "input_tokens": getattr(getattr(message, "usage", None), "input_tokens", None),
+            "output_tokens": getattr(getattr(message, "usage", None), "output_tokens", None),
         })
 
         # Parse the response into one or more AgentDecisions.
