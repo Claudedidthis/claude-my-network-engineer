@@ -86,12 +86,25 @@ class Conductor:
         *,
         on_say: Callable[[str], None] | None = None,
         on_user_input: Callable[[str], str] | None = None,
+        on_status: Callable[[dict[str, Any]], None] | None = None,
     ) -> SessionState:
-        """Run one session. Default I/O: stdout / stdin REPL."""
-        on_say = on_say or (lambda s: print(s, flush=True))
-        on_user_input = on_user_input or input
+        """Run one session. Default I/O: stdout / stdin REPL.
 
-        # Start-of-session bookkeeping
+        on_status receives structured agent-state events (tool_starting,
+        tool_done, awaiting_reply, interjection_window_open). The default
+        renderer prints them inline as `→ <message>` so the operator
+        always knows whether the agent is thinking, running a tool, or
+        waiting for them.
+        """
+        # Default I/O: a single _CliRenderer holds the prompt-adaptive
+        # state so on_status, on_user_input, and on_say share context.
+        # When any callback is overridden, the rest still use the default.
+        if on_say is None or on_status is None or on_user_input is None:
+            renderer = _CliRenderer()
+            on_say = on_say or renderer.on_say
+            on_status = on_status or renderer.on_status
+            on_user_input = on_user_input or renderer.on_user_input
+
         log.info(
             "conductor_session_start",
             extra={
@@ -117,9 +130,6 @@ class Conductor:
             max_tokens=self.config.max_tokens_per_turn,
         )
 
-        # Run the loop. The opening turn happens inside the loop — the LLM
-        # sees an empty working memory + the durable subset and emits its
-        # opening tool_use.
         try:
             result = run_agent(
                 system_prompt=self.config.system_prompt,
@@ -130,6 +140,7 @@ class Conductor:
                 llm=llm,
                 on_say=on_say,
                 on_user_input=on_user_input,
+                on_status=on_status,
                 max_turns=self.config.max_turns,
             )
         except KeyboardInterrupt:
@@ -298,3 +309,62 @@ class Conductor:
             f"this narrative; the full transcript was not preserved verbatim "
             f"to keep durable memory bounded."
         )
+
+
+# ── CLI helpers (default I/O when Conductor.run() is called without overrides) ──
+
+
+class _CliRenderer:
+    """Default I/O renderer for the Conductor REPL.
+
+    Holds the most-recent loop-event so the input prompt can adapt:
+    awaiting_reply → "[your reply] > " (blocks for non-empty)
+    interjection_window_open → "[Enter to continue, or type to interject] > "
+    Otherwise → "> "
+
+    Status events render as inline "→ <message>" lines so the operator
+    always knows what state the agent is in. A future UI substitutes a
+    different renderer; the loop's status events are stable.
+    """
+
+    def __init__(self) -> None:
+        self._last_input_event: str = "none"
+
+    def on_say(self, text: str) -> None:
+        print(text, flush=True)
+
+    def on_status(self, event: dict[str, Any]) -> None:
+        kind = event.get("event")
+        if kind in ("awaiting_reply", "interjection_window_open"):
+            # Remember the last input-related event so on_user_input can
+            # render the right prompt.
+            self._last_input_event = kind
+            return  # the prompt itself shows the hint; no extra status line
+        if kind == "thinking":
+            return  # too noisy to render every turn
+        if kind == "tool_starting":
+            tool = event.get("tool", "?")
+            print(f"→ running {tool}…", flush=True)
+        elif kind == "tool_done":
+            tool = event.get("tool", "?")
+            dur = event.get("duration_s", 0)
+            if event.get("had_error"):
+                err = event.get("error_type", "error")
+                print(f"→ {tool} failed in {dur}s ({err})", flush=True)
+            else:
+                print(f"→ {tool} done in {dur}s", flush=True)
+        elif kind == "tool_unknown":
+            tool = event.get("tool", "?")
+            print(f"→ unknown tool requested: {tool!r}", flush=True)
+
+    def on_user_input(self, prompt: str) -> str:
+        if self._last_input_event == "awaiting_reply":
+            # Block until non-empty — the agent explicitly asked.
+            while True:
+                reply = input("[your reply] > ")
+                if reply.strip():
+                    return reply
+                print("(the agent is waiting on your reply — type something then press Enter)", flush=True)
+        if self._last_input_event == "interjection_window_open":
+            return input("[Enter to continue, or type to interject] > ")
+        return input("> ")

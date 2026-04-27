@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Callable, Literal, Protocol
+from typing import Any, Callable, Literal, Optional, Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -306,19 +306,27 @@ def run_agent(
     llm: AgentLLM,
     on_say: Callable[[str], None],
     on_user_input: Callable[[str], str],
+    on_status: Callable[[dict[str, Any]], None] | None = None,
     max_turns: int = 100,
 ) -> SessionState:
     """Run the agent loop until done_for_now or max_turns exhaustion.
 
-    The Conductor and any sub-agent both call this with their own config.
-    Returns the SessionState (now containing the full tool-call log and
-    digest) so the caller can serialize it for the next session.
+    on_status receives structured event dicts for state transitions
+    relevant to the operator: tool started/finished, awaiting input,
+    interjection window open. CLI renders these inline; a UI consumes
+    them as discrete events. Default no-op when not provided.
     """
+    import time
+
     # Wire WorkingMemory overflow into the session's digest if not already set.
     if working_memory.overflow_callback is None:
         working_memory.overflow_callback = session_state.absorb_overflow
 
+    # Default no-op for status events so callers that don't care can ignore them.
+    _emit_status = on_status if on_status is not None else (lambda _evt: None)
+
     for _ in range(max_turns):
+        _emit_status({"event": "thinking"})
         decision = llm.decide(
             system_prompt=system_prompt,
             working_memory=working_memory.recent(),
@@ -333,12 +341,12 @@ def run_agent(
             on_say(decision.text)
             working_memory.add_assistant(decision.text)
             # After a speak, give the operator a chance to interject. Empty
-            # input (just Enter) means "continue, no interjection" and the
-            # loop proceeds to the next LLM turn without a user message.
-            # Non-empty input becomes a user turn the LLM sees on its next
-            # decision call. This prevents the agent from monologuing past
-            # an implicit question; it also makes conversation feel natural
-            # — when someone says something to you, you can reply.
+            # input (Enter) means "continue, no interjection". Non-empty
+            # input becomes a user turn the LLM sees on its next decide call.
+            _emit_status({
+                "event": "interjection_window_open",
+                "hint": "Enter to continue, or type to interject",
+            })
             interjection = on_user_input("> ")
             if interjection:
                 working_memory.add_user(interjection)
@@ -346,6 +354,10 @@ def run_agent(
         elif isinstance(decision, AskDecision):
             on_say(decision.question)
             working_memory.add_assistant(decision.question)
+            _emit_status({
+                "event": "awaiting_reply",
+                "hint": "your reply (required)",
+            })
             answer = on_user_input("> ")
             working_memory.add_user(answer)
 
@@ -357,14 +369,39 @@ def run_agent(
                 session_state.record_tool_call(
                     decision.tool, decision.args, {"error": err_msg},
                 )
+                _emit_status({
+                    "event": "tool_unknown",
+                    "tool": decision.tool,
+                })
                 continue
+            _emit_status({
+                "event": "tool_starting",
+                "tool": decision.tool,
+                "args_keys": sorted((decision.args or {}).keys()),
+            })
+            t0 = time.monotonic()
             try:
                 result = tool.fn(**decision.args)
+                duration_s = time.monotonic() - t0
+                _emit_status({
+                    "event": "tool_done",
+                    "tool": decision.tool,
+                    "duration_s": round(duration_s, 2),
+                    "had_error": False,
+                })
             except Exception as exc:
+                duration_s = time.monotonic() - t0
                 result = {
                     "error": str(exc),
                     "exception_type": exc.__class__.__name__,
                 }
+                _emit_status({
+                    "event": "tool_done",
+                    "tool": decision.tool,
+                    "duration_s": round(duration_s, 2),
+                    "had_error": True,
+                    "error_type": exc.__class__.__name__,
+                })
             session_state.record_tool_call(decision.tool, decision.args, result)
             working_memory.add_tool_observation(
                 f"{decision.tool}(...) → {repr(result)[:120]}",

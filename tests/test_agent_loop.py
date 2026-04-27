@@ -146,6 +146,108 @@ def test_speak_decision_allows_operator_interjection() -> None:
     assert "wait, before we go on" in user_turns[0].content
 
 
+def test_status_events_emitted_around_tool_calls() -> None:
+    """The loop emits structured status events around tool execution so the
+    operator (or a future UI) always knows what state the agent is in."""
+    captured_events: list[dict] = []
+
+    def my_tool(**_: object) -> str:
+        return "result"
+
+    tools = {"foo": ToolSpec(name="foo", description="x", fn=my_tool)}
+    decisions = [CallToolDecision(tool="foo"), DoneDecision()]
+    llm = ScriptedLLM(decisions)
+    durable = FakeDurableMemory()
+
+    run_agent(
+        system_prompt="(test)",
+        durable_memory=durable,
+        session_state=SessionState(),
+        working_memory=WorkingMemory(),
+        tools=tools,
+        llm=llm,
+        on_say=lambda _: None,
+        on_user_input=lambda _: "",
+        on_status=captured_events.append,
+    )
+
+    event_kinds = [e.get("event") for e in captured_events]
+    assert "thinking" in event_kinds
+    assert "tool_starting" in event_kinds
+    assert "tool_done" in event_kinds
+    # Tool_done should carry duration and had_error
+    tool_done = next(e for e in captured_events if e["event"] == "tool_done")
+    assert tool_done["tool"] == "foo"
+    assert tool_done["had_error"] is False
+    assert "duration_s" in tool_done
+
+
+def test_status_event_for_failed_tool_marks_had_error() -> None:
+    captured_events: list[dict] = []
+
+    def angry(**_: object) -> object:
+        raise ValueError("kaboom")
+
+    tools = {"angry": ToolSpec(name="angry", description="x", fn=angry)}
+    llm = ScriptedLLM([CallToolDecision(tool="angry"), DoneDecision()])
+
+    run_agent(
+        system_prompt="(test)",
+        durable_memory=FakeDurableMemory(),
+        session_state=SessionState(),
+        working_memory=WorkingMemory(),
+        tools=tools,
+        llm=llm,
+        on_say=lambda _: None,
+        on_user_input=lambda _: "",
+        on_status=captured_events.append,
+    )
+
+    tool_done = next(e for e in captured_events if e["event"] == "tool_done")
+    assert tool_done["had_error"] is True
+    assert tool_done["error_type"] == "ValueError"
+
+
+def test_status_event_awaiting_reply_for_ask_decision() -> None:
+    captured_events: list[dict] = []
+    llm = ScriptedLLM([AskDecision(question="Use case?"), DoneDecision()])
+
+    run_agent(
+        system_prompt="(test)",
+        durable_memory=FakeDurableMemory(),
+        session_state=SessionState(),
+        working_memory=WorkingMemory(),
+        tools={},
+        llm=llm,
+        on_say=lambda _: None,
+        on_user_input=lambda _: "home office",
+        on_status=captured_events.append,
+    )
+
+    event_kinds = [e.get("event") for e in captured_events]
+    assert "awaiting_reply" in event_kinds
+
+
+def test_status_event_interjection_window_for_speak_decision() -> None:
+    captured_events: list[dict] = []
+    llm = ScriptedLLM([SpeakDecision(text="hi"), DoneDecision()])
+
+    run_agent(
+        system_prompt="(test)",
+        durable_memory=FakeDurableMemory(),
+        session_state=SessionState(),
+        working_memory=WorkingMemory(),
+        tools={},
+        llm=llm,
+        on_say=lambda _: None,
+        on_user_input=lambda _: "",
+        on_status=captured_events.append,
+    )
+
+    event_kinds = [e.get("event") for e in captured_events]
+    assert "interjection_window_open" in event_kinds
+
+
 def test_speak_decision_empty_interjection_does_not_create_user_turn() -> None:
     """Empty input (just Enter) means 'continue' — no user turn added."""
     said, llm, _, _ = _harness(
