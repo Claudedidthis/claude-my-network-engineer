@@ -393,14 +393,78 @@ class AIRuntimeAgentLLM:
         # Parse the response into one or more AgentDecisions.
         decisions = self._parse_response_to_decisions(message)
         if not decisions:
+            # Empty response (model emitted no text + no tool_use). Rather
+            # than immediately ending the session, append a nudge and
+            # retry once. If the second attempt is also empty, we exit.
+            stop_reason = getattr(message, "stop_reason", "unknown")
             log.warning(
                 "conductor_llm_empty_response",
                 extra={
                     "agent": "conductor_llm",
-                    "stop_reason": getattr(message, "stop_reason", "unknown"),
+                    "stop_reason": stop_reason,
+                    "input_tokens": getattr(getattr(message, "usage", None), "input_tokens", None),
+                    "output_tokens": getattr(getattr(message, "usage", None), "output_tokens", None),
                 },
             )
-            return DoneDecision(reason="LLM returned no actionable content")
+            _debug_log("empty_response_retry_attempt", {
+                "stop_reason": stop_reason,
+            })
+            # Append a nudge to the conversation and try once more.
+            self._api_messages.append({
+                "role": "user",
+                "content": (
+                    "[loop-nudge] Your previous response had no content. "
+                    "If you were waiting for the operator, use ask_operator. "
+                    "If you were done, emit done_for_now. Otherwise, continue "
+                    "with the conversation — speak, call a tool, or save a fact."
+                ),
+            })
+            try:
+                retry_message = self.ai._client.messages.create(
+                    model=model_id,
+                    max_tokens=self.max_tokens,
+                    system=[
+                        {"type": "text", "text": system_prompt,
+                         "cache_control": {"type": "ephemeral"}},
+                        {"type": "text",
+                         "text": "DURABLE MEMORY SUBSET:\n\n" + (durable_subset or "(none)")
+                                 + "\n\nSESSION SUMMARY:\n\n" + (session_summary or "(none)"),
+                         "cache_control": {"type": "ephemeral"}},
+                    ],
+                    messages=self._api_messages,
+                    tools=anthropic_tools,
+                )
+            except Exception as exc:
+                _debug_log("empty_response_retry_failed", {
+                    "error_type": exc.__class__.__name__,
+                    "error_str": str(exc)[:1000],
+                })
+                return DoneDecision(reason=f"empty response + retry failed: {exc.__class__.__name__}")
+
+            retry_content = self._content_to_dicts(retry_message.content)
+            self._api_messages.append({
+                "role": "assistant",
+                "content": retry_content,
+            })
+            for block in retry_message.content:
+                if getattr(block, "type", None) != "tool_use":
+                    continue
+                use_id = getattr(block, "id", None)
+                if not use_id:
+                    continue
+                bname = getattr(block, "name", "")
+                kind = "virtual" if bname in _VIRTUAL_TOOL_NAMES else "real"
+                self._pending_tool_uses.append((use_id, bname, kind))
+
+            _debug_log("empty_response_retry_response", {
+                "stop_reason": getattr(retry_message, "stop_reason", "?"),
+                "assistant_content": retry_content,
+            })
+
+            decisions = self._parse_response_to_decisions(retry_message)
+            if not decisions:
+                # Second time empty — really done.
+                return DoneDecision(reason="LLM returned empty content twice in a row")
 
         # Capture EVERY tool_use (real AND virtual) in document order.
         # Anthropic's API requires tool_result blocks for ALL tool_uses
@@ -483,22 +547,44 @@ class AIRuntimeAgentLLM:
         new_turns = working_memory[self._processed_turn_count:]
         self._processed_turn_count = len(working_memory)
 
-        # Iterator over real-tool observations from this delta. The model's
-        # tool_uses came in document order; the loop ran them in that order
-        # too, so observations land in the same document order. We pop
-        # from the front for each "real" pending tool_use.
-        observations = [
-            t for t in new_turns if t.role == "tool_observation"
-        ]
+        # Separate user turns and tool observations from the delta.
+        observations = [t for t in new_turns if t.role == "tool_observation"]
+        user_turns = [t for t in new_turns if t.role == "user"]
         observation_iter = iter(observations)
+
+        # ask_operator is BLOCKING — every ask in pending corresponds 1:1
+        # to a user turn in the delta. We pair them by reverse order: the
+        # last ask_operator gets the last user turn, etc. Why reverse:
+        # interjections from speaks come FIRST in document order, ask
+        # replies come AFTER. Reverse-matching lets ask replies bind
+        # correctly while interjections fall through to text blocks.
+        ask_pending_indices = [
+            i for i, (_, name, kind) in enumerate(self._pending_tool_uses)
+            if kind == "virtual" and name == "ask_operator"
+        ]
+        ask_replies: dict[str, str] = {}
+        unconsumed_user_turns = list(user_turns)
+        for idx in reversed(ask_pending_indices):
+            if not unconsumed_user_turns:
+                break
+            use_id = self._pending_tool_uses[idx][0]
+            ask_replies[use_id] = unconsumed_user_turns.pop().content
 
         blocks: list[dict[str, Any]] = []
 
         # Pass 1: tool_result blocks for EVERY pending tool_use, in
-        # document order. Virtual = synthesized "ok"; real = paired with
-        # the next tool_observation.
+        # document order. Virtual ask_operator carries the operator's
+        # actual reply as content (cleaner for the model than a synth
+        # placeholder + separate text block). Other virtual tools get
+        # minimal "ok". Real tools get the corresponding observation.
         for use_id, name, kind in self._pending_tool_uses:
-            if kind == "virtual":
+            if name == "ask_operator" and use_id in ask_replies:
+                blocks.append({
+                    "type": "tool_result",
+                    "tool_use_id": use_id,
+                    "content": ask_replies[use_id][:8000],
+                })
+            elif kind == "virtual":
                 blocks.append({
                     "type": "tool_result",
                     "tool_use_id": use_id,
@@ -513,29 +599,23 @@ class AIRuntimeAgentLLM:
                         "content": obs.content[:8000],
                     })
                 else:
-                    # No observation in delta — defensive fallback. This
-                    # shouldn't happen with the current loop (every
-                    # CallToolDecision adds a tool_observation), but if
-                    # it ever did, omitting tool_result would 400.
+                    # Defensive fallback — every CallToolDecision adds a
+                    # tool_observation; this shouldn't happen.
                     blocks.append({
                         "type": "tool_result",
                         "tool_use_id": use_id,
-                        "content": "(tool result missing — loop did not "
-                                   "produce a tool_observation)",
+                        "content": "(tool result missing)",
                     })
-        # All pending tool_uses are now satisfied. Clear the list.
+        # All pending tool_uses are now satisfied.
         self._pending_tool_uses = []
 
-        # Pass 2: user-role turns (interjections, ask replies) → text blocks
-        for turn in new_turns:
-            if turn.role == "user":
-                blocks.append({
-                    "type": "text",
-                    "text": turn.content,
-                })
-            # assistant and tool_observation turns are already handled
-            # above (assistant: response-receive-time; tool_observation:
-            # paired with pending real tool_uses).
+        # Pass 2: any user turns NOT consumed as ask replies become text
+        # blocks (these are interjections from speak windows).
+        for turn in unconsumed_user_turns:
+            blocks.append({
+                "type": "text",
+                "text": turn.content,
+            })
 
         if not blocks:
             return
@@ -678,15 +758,8 @@ class AIRuntimeAgentLLM:
 def _virtual_synth_result(tool_name: str) -> str:
     """Synthesized tool_result content for a virtual tool that's already
     been processed by the loop. Anthropic's API requires SOME tool_result
-    for every tool_use; this text confirms the loop took the action."""
-    if tool_name == "speak":
-        return "displayed to operator"
-    if tool_name == "ask_operator":
-        return "asked operator; reply will follow as the next user message text block"
-    if tool_name == "save_fact":
-        return "fact written to durable memory"
-    if tool_name == "log_decision":
-        return "decision appended to durable decision log"
-    if tool_name == "done_for_now":
-        return "session ended"
+    content per tool_use; we keep it minimal to avoid confusing the model
+    with meta-narration about what the loop did. Operator replies (for
+    ask_operator) are placed in the tool_result content directly via the
+    fold logic, not as a synth string here."""
     return "ok"
