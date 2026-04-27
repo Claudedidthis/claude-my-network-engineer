@@ -403,8 +403,8 @@ The HandoffEnvelope contract still applies to anything crossing a trust boundary
 3. **Build `tools/agent_loop.py`** — the loop primitive. Tested standalone.
 4. **Build `tools/durable_memory.py`** — the Tier 3 reader/writer with the `query_history` tool.
 5. **Build `agents/conductor.py`** — uses the loop primitive + memory + tool inventory. The first real agent.
-6. **Implement `nye chat` CLI** — wraps the Conductor in a REPL.
-7. **Migrate `nye onboard` and `nye registry walkthrough`** to be entry points into the same Conductor with the appropriate opening prompt. Eventually deprecate them in favor of `nye chat`.
+6. **Make bare `nye` drop into the Conductor REPL.** The default invocation with no subcommand becomes the conversational entry point. Existing subcommands (`nye onboard`, `nye registry walkthrough`, `nye audit`, `nye optimize`, `nye security propose-vlans`, etc.) become legacy aliases — they invoke the Conductor with a specific opening prompt rather than running the old form-runner code paths.
+7. **Deprecate the form-runner code paths.** The probe-driven `_cmd_onboard` and the per-device `walkthrough` in `registry_agent.py` get removed once the Conductor handles those flows. Subcommand aliases survive as ergonomic shortcuts, but the underlying behavior is the Conductor with a tailored opening prompt.
 8. **Sub-agents come later.** `propose_segmentation` becomes the second agent (smaller goal, smaller toolset). Other sub-agents only as needed.
 9. **Re-scope the directive set.** Most P0 BLOCKERs assumed 10 agents handing off. They apply to 1 agent + 1 sub-agent + many tools, which is a thinner contract. See §11.
 
@@ -466,7 +466,14 @@ Re-scoped:
 
 ### Still open
 
-1. **Tool naming**: do you prefer `tools/auditor.py` or `tools/audit.py`? The former preserves the existing module name; the latter reads better. Smaller decision but affects every import in the eventual migration.
-2. **CLI shape**: `nye chat` is one option. `nye` with no subcommand could also drop into the conductor. Operator preference.
-3. **History interrogation depth**: when the operator asks "why X?", how far back does `query_history` look? All time? Last 30 days? Configurable?
-4. **Session digest writer**: deterministic template, or LLM-generated summary? LLM is richer but introduces another untrusted-content risk (the digest itself becomes durable memory the next session reads).
+*(none — all four resolved 2026-04-26)*
+
+### Also decided 2026-04-26
+
+7. ~~**Tool naming**~~ **DECIDED**: `tools/auditor.py` (and `tools/optimizer.py`, `tools/monitor.py`, etc. — preserve existing noun-form module names). Reasons: preserves existing module names so the rename is a `git mv` rather than a code rewrite; the noun form reads naturally at call sites (`tools.auditor.run(...)`); lower migration churn for downstream imports.
+
+8. ~~**CLI shape**~~ **DECIDED**: bare `nye` drops into the Conductor. Existing subcommands (`nye onboard`, `nye registry walkthrough`, `nye audit`, `nye optimize`, `nye security propose-vlans`, `nye ai analyze`, etc.) become legacy aliases that map to the Conductor with a specific opening prompt — useful as shortcuts for power users but no longer the primary path. The "talk to my agent" experience is `nye` with no arguments.
+
+9. ~~**History interrogation depth**~~ **DECIDED**: configurable. Default `query_history(days_back=None)` returns all relevant matches across all time. Operator can scope inline ("just the last 30 days") and the Conductor passes that through as `days_back=30`. Power-user CLI flag also available. History is small (text logs); the cost of all-time default is negligible and the value of unrestricted recall is real ("why did we set up the DMZ?" should find the answer regardless of when the origin story was captured).
+
+10. ~~**Session digest writer**~~ **DECIDED**: hybrid — deterministic structured facts + LLM-generated narrative summary. The structured part captures the audit trail (which tools were called, what was saved, what state changed) and is reproducible. The narrative paragraph is LLM-generated and gives the *story* of what happened in the session ("operator was concerned about IoT isolation; we walked the heritage artifacts and captured DMZ origin story; identified two AMBER markers around port forwards"). Both go into the digest. The narrative gets wrapped in `<conductor_rendered>` provenance tags on retrieval per §3 rules. The structured facts get `<tool_output>` tags. This way the next session reads the rich narrative for context but the model knows it's reading a Conductor-rendered summary, not authoritative directives.
