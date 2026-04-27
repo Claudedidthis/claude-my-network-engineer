@@ -680,6 +680,171 @@ def test_multi_block_response_emits_speak_then_call_tool() -> None:
 # ── conductor_tools: tool registry ──────────────────────────────────────────
 
 
+def test_virtual_tool_use_gets_synthesized_tool_result_on_next_call() -> None:
+    """REGRESSION (live 400 2026-04-27 fourth occurrence): the model
+    emitted a `speak` tool_use; my code treated it as virtual and didn't
+    emit a tool_result for it. Anthropic 400'd because EVERY tool_use,
+    real or virtual, requires a corresponding tool_result on the next
+    user message."""
+    class _SequencedMessages:
+        def __init__(self, responses):
+            self.responses = list(responses)
+            self.calls = 0
+            self.last_kwargs = None
+
+        def create(self, **kwargs):
+            self.last_kwargs = kwargs
+            r = self.responses[min(self.calls, len(self.responses) - 1)]
+            self.calls += 1
+            return r
+
+    seq = _SequencedMessages([
+        # First response: a speak virtual tool_use with id
+        _FakeMessage([
+            _FakeBlock(type="tool_use", name="speak", id="toolu_speak_1",
+                       input={"text": "Hi there."}),
+        ]),
+        # Second response: done
+        _FakeMessage([
+            _FakeBlock(type="tool_use", name="done_for_now", id="toolu_done_1", input={}),
+        ]),
+    ])
+    fake = type("X", (), {"messages": seq})()
+    from network_engineer.agents.ai_runtime import AIRuntime
+    runtime = AIRuntime(enabled=True, client=fake)
+    llm = AIRuntimeAgentLLM(runtime)
+
+    # First decide: returns SpeakDecision
+    d1 = llm.decide(system_prompt="(t)", working_memory=[],
+                    session_summary="", durable_subset="", tools={})
+    assert isinstance(d1, SpeakDecision)
+
+    # Loop processes the speak (no tool_observation, since virtual)
+    # Working memory has the assistant turn echoed:
+    wm = [Turn(role="assistant", content="Hi there.")]
+
+    # Second decide: triggers an API call. The api_messages MUST include
+    # a tool_result block referencing toolu_speak_1.
+    d2 = llm.decide(system_prompt="(t)", working_memory=wm,
+                    session_summary="", durable_subset="", tools={})
+    assert isinstance(d2, DoneDecision)
+
+    msgs = seq.last_kwargs["messages"]
+
+    # Find the user message with the speak's tool_result block
+    found = False
+    for m in msgs:
+        if m["role"] != "user":
+            continue
+        content = m["content"]
+        if isinstance(content, list):
+            for block in content:
+                if (isinstance(block, dict)
+                    and block.get("type") == "tool_result"
+                    and block.get("tool_use_id") == "toolu_speak_1"):
+                    found = True
+                    break
+    assert found, (
+        "expected a tool_result block for the speak virtual tool_use — "
+        "without it Anthropic 400's with 'tool_use ids were found without "
+        "tool_result blocks immediately after'"
+    )
+
+    # Strict alternation invariant
+    for i in range(len(msgs) - 1):
+        assert msgs[i]["role"] != msgs[i + 1]["role"]
+
+
+def test_mixed_virtual_and_real_tool_uses_all_get_results_in_document_order() -> None:
+    """Model emits [speak, audit_network] in one response. Both are
+    tool_uses from Anthropic's perspective. The next user message must
+    contain tool_result blocks for BOTH, in document order: synth speak
+    result first, then real audit result."""
+    class _SequencedMessages:
+        def __init__(self, responses):
+            self.responses = list(responses)
+            self.calls = 0
+            self.last_kwargs = None
+
+        def create(self, **kwargs):
+            self.last_kwargs = kwargs
+            return self.responses[min(self.calls, len(self.responses) - 1)]
+
+    seq = _SequencedMessages([
+        _FakeMessage([
+            _FakeBlock(type="tool_use", name="speak", id="toolu_speak",
+                       input={"text": "Checking now."}),
+            _FakeBlock(type="tool_use", name="audit_network", id="toolu_audit",
+                       input={}),
+        ]),
+        _FakeMessage([
+            _FakeBlock(type="tool_use", name="done_for_now", id="d1", input={}),
+        ]),
+    ])
+
+    class _Counted(_SequencedMessages):
+        def create(self, **kwargs):
+            self.last_kwargs = kwargs
+            r = self.responses[min(self.calls, len(self.responses) - 1)]
+            self.calls += 1
+            return r
+
+    seq_counted = _Counted([
+        _FakeMessage([
+            _FakeBlock(type="tool_use", name="speak", id="toolu_speak",
+                       input={"text": "Checking now."}),
+            _FakeBlock(type="tool_use", name="audit_network", id="toolu_audit",
+                       input={}),
+        ]),
+        _FakeMessage([
+            _FakeBlock(type="tool_use", name="done_for_now", id="d1", input={}),
+        ]),
+    ])
+    fake = type("X", (), {"messages": seq_counted})()
+    from network_engineer.agents.ai_runtime import AIRuntime
+    runtime = AIRuntime(enabled=True, client=fake)
+    llm = AIRuntimeAgentLLM(runtime)
+
+    # Decide 1: SpeakDecision; CallToolDecision queued.
+    d1 = llm.decide(system_prompt="(t)", working_memory=[],
+                    session_summary="", durable_subset="", tools={})
+    assert isinstance(d1, SpeakDecision)
+
+    # Decide 2: drains queue, returns CallToolDecision (no API call)
+    d2 = llm.decide(system_prompt="(t)", working_memory=[Turn(role="assistant", content="Checking now.")],
+                    session_summary="", durable_subset="", tools={})
+    assert isinstance(d2, CallToolDecision)
+
+    # Loop runs the audit; tool_observation lands.
+    wm = [
+        Turn(role="assistant", content="Checking now."),
+        Turn(role="tool_observation", content="audit → 5 findings"),
+    ]
+
+    # Decide 3: real API call. Both tool_results must be present.
+    d3 = llm.decide(system_prompt="(t)", working_memory=wm,
+                    session_summary="", durable_subset="", tools={})
+    assert isinstance(d3, DoneDecision)
+
+    msgs = seq_counted.last_kwargs["messages"]
+    # Find the user message with tool_result blocks
+    tool_result_msg = None
+    for m in msgs:
+        if m["role"] == "user" and isinstance(m["content"], list):
+            if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in m["content"]):
+                tool_result_msg = m
+                break
+    assert tool_result_msg is not None
+
+    # Both tool_results must be present. Document order: speak first.
+    tool_results = [b for b in tool_result_msg["content"] if b.get("type") == "tool_result"]
+    assert len(tool_results) == 2
+    assert tool_results[0]["tool_use_id"] == "toolu_speak"
+    assert tool_results[1]["tool_use_id"] == "toolu_audit"
+    # Real tool result has real content; virtual is the synth string
+    assert "5 findings" in tool_results[1]["content"]
+
+
 def test_record_caution_rejects_state_transition_fields(tmp_path: Path) -> None:
     """REGRESSION (caught by code-review 2026-04-27): _record_caution
     accepted **kwargs unfiltered, letting the LLM set state="resolved"

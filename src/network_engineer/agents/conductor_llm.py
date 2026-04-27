@@ -173,12 +173,18 @@ class AIRuntimeAgentLLM:
 
     State across decide() calls within one session:
       _api_messages           Anthropic-shaped conversation history.
-      _pending_tool_use_ids   FIFO queue of tool_use_ids from the model
-                              awaiting matching tool_result blocks. Per
-                              code-review 2026-04-27: the previous
-                              single-slot design dropped correlation when
-                              the model emitted multiple tool_uses in one
-                              response, recreating the runaway-tool bug.
+      _pending_tool_uses      Document-ordered list of (id, name, kind)
+                              tuples for every tool_use in the most
+                              recent assistant response. kind is
+                              "virtual" (speak/ask/save/log/done) or
+                              "real" (snapshot/audit/etc). EVERY entry
+                              MUST get a tool_result on the next user
+                              message — virtual ones get a synthesized
+                              "ok"; real ones get the actual tool
+                              observation content. Anthropic enforces
+                              this at the API layer (returns 400 with
+                              "tool_use ids were found without tool_result
+                              blocks immediately after").
       _decision_queue         Multi-block responses (text + tool_use)
                               produce multiple decisions; the loop drains
                               them one per call.
@@ -209,10 +215,11 @@ class AIRuntimeAgentLLM:
 
         # Anthropic-shaped conversation. Each entry: {"role": ..., "content": ...}
         self._api_messages: list[dict[str, Any]] = []
-        # FIFO queue of tool_use_ids awaiting tool_result correlation.
-        # Each real tool_use in a response pushes onto the back; each
-        # tool_observation pops from the front.
-        self._pending_tool_use_ids: list[str] = []
+        # Document-ordered list of pending (tool_use_id, name, kind) for
+        # every tool_use in the most recent assistant response. ALL of
+        # them need a tool_result on the next user message. Cleared
+        # entirely on each fold.
+        self._pending_tool_uses: list[tuple[str, str, str]] = []
         # Decisions extracted from a multi-block response, queued for the
         # loop to consume one at a time.
         self._decision_queue: list[AgentDecision] = []
@@ -293,7 +300,7 @@ class AIRuntimeAgentLLM:
             "tools_count": len(anthropic_tools),
             "tool_names": [t.get("name") for t in anthropic_tools],
             "max_tokens": self.max_tokens,
-            "pending_tool_use_ids": list(self._pending_tool_use_ids),
+            "pending_tool_uses": list(self._pending_tool_uses),
         })
 
         try:
@@ -351,7 +358,7 @@ class AIRuntimeAgentLLM:
                 "error_body": error_body,
                 "messages_count": len(self._api_messages),
                 "messages": truncate_messages_for_log(self._api_messages),
-                "pending_tool_use_ids": list(self._pending_tool_use_ids),
+                "pending_tool_uses": list(self._pending_tool_uses),
             })
 
             log.error(
@@ -395,18 +402,20 @@ class AIRuntimeAgentLLM:
             )
             return DoneDecision(reason="LLM returned no actionable content")
 
-        # Capture EVERY real tool_use_id (in document order) for FIFO
-        # correlation with subsequent tool_observation turns. The queue
-        # design handles the multi-tool-use-in-one-response case the
-        # single-slot version would silently drop.
+        # Capture EVERY tool_use (real AND virtual) in document order.
+        # Anthropic's API requires tool_result blocks for ALL tool_uses
+        # in the immediately-following user message. Virtual tools
+        # (speak/ask/save/log/done) get synthesized "ok" results; real
+        # tools get the actual tool_observation content via _fold.
         for block in message.content:
-            if getattr(block, "type", None) == "tool_use":
-                # Virtual tools (speak/ask/save/log/done) don't produce
-                # tool_results — only real tools need correlation.
-                if getattr(block, "name", "") not in _VIRTUAL_TOOL_NAMES:
-                    use_id = getattr(block, "id", None)
-                    if use_id:
-                        self._pending_tool_use_ids.append(use_id)
+            if getattr(block, "type", None) != "tool_use":
+                continue
+            use_id = getattr(block, "id", None)
+            if not use_id:
+                continue
+            block_name = getattr(block, "name", "")
+            kind = "virtual" if block_name in _VIRTUAL_TOOL_NAMES else "real"
+            self._pending_tool_uses.append((use_id, block_name, kind))
 
         # Trim the conversation buffer if it's grown past the cap.
         self._enforce_message_cap()
@@ -451,58 +460,71 @@ class AIRuntimeAgentLLM:
 
     def _fold_working_memory_delta(self, working_memory: list[Turn]) -> None:
         """Walk new turns since last call; emit AT MOST ONE user message
-        containing all relevant content blocks for the delta.
+        with all required tool_result blocks plus any operator text.
 
-        Anthropic strict-alternation invariant (regression fix 2026-04-27
-        from a live 400 error): user/assistant messages MUST alternate.
-        Two consecutive user messages get rejected. The delta from one
-        loop iteration may include multiple tool_observations (when the
-        prior response queued multiple tool_uses) AND/OR operator
-        interjections. All of them must land in ONE user message with a
-        mixed content list:
+        Anthropic constraints this satisfies:
+          1. Strict user/assistant alternation. One user message per fold.
+          2. tool_result for EVERY tool_use in the prior assistant message,
+             in document order. This includes virtual tools (speak,
+             ask_operator, save_fact, log_decision, done_for_now) — the
+             API treats them as regular tool_uses and rejects with 400 if
+             they don't have matching tool_results.
+          3. Mixed content blocks (tool_result + text) in one user message
+             are valid and let us include operator interjections /
+             ask-replies alongside tool results.
 
-            {
-              role: user,
-              content: [
-                {type: tool_result, tool_use_id: A, content: "..."},
-                {type: tool_result, tool_use_id: B, content: "..."},
-                {type: text, text: "operator interjection"}
-              ]
-            }
-
-        Order within the content list: tool_result blocks first
-        (Anthropic requires them immediately after the assistant tool_use),
-        then text blocks (interjections / ask replies / synthesized
-        observations).
-
-        Assistant turns from working memory are always skipped — they're
-        added to api_messages at response-receive time with full content
-        blocks (text + tool_use preserved).
+        Block order in the emitted user message:
+          1. tool_result blocks for every pending tool_use (in document
+             order). Virtual tools get synthesized "ok" content; real
+             tools get the corresponding tool_observation content.
+          2. Text blocks for any operator user turns (interjections,
+             ask replies).
         """
         new_turns = working_memory[self._processed_turn_count:]
         self._processed_turn_count = len(working_memory)
 
+        # Iterator over real-tool observations from this delta. The model's
+        # tool_uses came in document order; the loop ran them in that order
+        # too, so observations land in the same document order. We pop
+        # from the front for each "real" pending tool_use.
+        observations = [
+            t for t in new_turns if t.role == "tool_observation"
+        ]
+        observation_iter = iter(observations)
+
         blocks: list[dict[str, Any]] = []
 
-        # Pass 1: tool_observations → tool_result blocks (FIFO correlation)
-        for turn in new_turns:
-            if turn.role != "tool_observation":
-                continue
-            if self._pending_tool_use_ids:
-                use_id = self._pending_tool_use_ids.pop(0)
+        # Pass 1: tool_result blocks for EVERY pending tool_use, in
+        # document order. Virtual = synthesized "ok"; real = paired with
+        # the next tool_observation.
+        for use_id, name, kind in self._pending_tool_uses:
+            if kind == "virtual":
                 blocks.append({
                     "type": "tool_result",
                     "tool_use_id": use_id,
-                    "content": turn.content[:8000],
+                    "content": _virtual_synth_result(name),
                 })
             else:
-                # No pending id — synthesize as a text block in the same
-                # user message. Degraded but consistent with strict
-                # alternation.
-                blocks.append({
-                    "type": "text",
-                    "text": f"[tool_observation] {turn.content}",
-                })
+                obs = next(observation_iter, None)
+                if obs is not None:
+                    blocks.append({
+                        "type": "tool_result",
+                        "tool_use_id": use_id,
+                        "content": obs.content[:8000],
+                    })
+                else:
+                    # No observation in delta — defensive fallback. This
+                    # shouldn't happen with the current loop (every
+                    # CallToolDecision adds a tool_observation), but if
+                    # it ever did, omitting tool_result would 400.
+                    blocks.append({
+                        "type": "tool_result",
+                        "tool_use_id": use_id,
+                        "content": "(tool result missing — loop did not "
+                                   "produce a tool_observation)",
+                    })
+        # All pending tool_uses are now satisfied. Clear the list.
+        self._pending_tool_uses = []
 
         # Pass 2: user-role turns (interjections, ask replies) → text blocks
         for turn in new_turns:
@@ -511,14 +533,13 @@ class AIRuntimeAgentLLM:
                     "type": "text",
                     "text": turn.content,
                 })
-            # assistant turns are skipped — captured at response-receive time
+            # assistant and tool_observation turns are already handled
+            # above (assistant: response-receive-time; tool_observation:
+            # paired with pending real tool_uses).
 
         if not blocks:
             return
 
-        # Simplification: if the only block is plain text, send `content`
-        # as a string for canonical Anthropic shape. Otherwise send the
-        # full list (required when any tool_result blocks are present).
         if len(blocks) == 1 and blocks[0]["type"] == "text":
             self._api_messages.append({
                 "role": "user",
@@ -652,3 +673,20 @@ class AIRuntimeAgentLLM:
                 rationale=rationale,
             )
         return None
+
+
+def _virtual_synth_result(tool_name: str) -> str:
+    """Synthesized tool_result content for a virtual tool that's already
+    been processed by the loop. Anthropic's API requires SOME tool_result
+    for every tool_use; this text confirms the loop took the action."""
+    if tool_name == "speak":
+        return "displayed to operator"
+    if tool_name == "ask_operator":
+        return "asked operator; reply will follow as the next user message text block"
+    if tool_name == "save_fact":
+        return "fact written to durable memory"
+    if tool_name == "log_decision":
+        return "decision appended to durable decision log"
+    if tool_name == "done_for_now":
+        return "session ended"
+    return "ok"
