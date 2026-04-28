@@ -47,6 +47,7 @@ from network_engineer.tools.conductor_debug import (
     set_session_id as _debug_set_session,
 )
 from network_engineer.tools.approval_gate import ApprovalGate
+from network_engineer.tools.conductor_io import ConductorIO, IOMode
 from network_engineer.tools.durable_memory import DurableMemory
 from network_engineer.tools.logging_setup import get_logger
 
@@ -335,17 +336,21 @@ class Conductor:
 
 
 class _CliRenderer:
-    """Default I/O renderer for the Conductor REPL.
+    """Default I/O renderer for the Conductor REPL — implements ConductorIO.
 
     Holds the most-recent loop-event so the input prompt can adapt:
     awaiting_reply → "[your reply] > " (blocks for non-empty)
     interjection_window_open → "[Enter to continue, or type to interject] > "
+    approval_required → "[approval code] > "
     Otherwise → "> "
 
     Status events render as inline "→ <message>" lines so the operator
-    always knows what state the agent is in. A future UI substitutes a
-    different renderer; the loop's status events are stable.
+    always knows what state the agent is in. The Web adapter (Stage 2)
+    is a parallel implementation of the same Protocol — same loop, same
+    callbacks, different surface.
     """
+
+    mode: IOMode = "cli"
 
     def __init__(self) -> None:
         self._last_input_event: str = "none"
