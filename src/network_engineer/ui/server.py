@@ -193,20 +193,32 @@ async def _run_session(ws: WebSocket, runner: Any) -> None:
                 return
 
     async def forward_inbound() -> None:
-        """Pull operator input from WS and push into the inbound queue."""
+        """Pull operator input from WS and route to the right queue.
+
+        Two channels: text messages go to `inbound` (Conductor's
+        on_user_input); approve/reject go to `approvals` (Conductor's
+        wait_for_approval). Sorting by `type` here keeps a button click
+        from ever being mistaken for a typed message and vice versa.
+        """
         try:
             while True:
                 msg = await ws.receive_json()
-                if isinstance(msg, dict):
+                if not isinstance(msg, dict):
+                    continue
+                kind = msg.get("type")
+                if kind in ("approve", "reject"):
+                    adapter.approvals.put(msg)
+                else:
+                    # Default channel — text input, anything else.
                     adapter.inbound.put(msg)
-                # Anything else: silently drop (defense against schema drift)
         except WebSocketDisconnect:
             log.debug("ws_disconnect")
         except Exception as exc:
             log.warning("ws_recv_error", extra={"error_type": exc.__class__.__name__})
         finally:
             # Whatever caused us to stop reading, wake the Conductor so
-            # it can exit gracefully if it was blocked on input.
+            # it can exit gracefully if it was blocked on input OR on
+            # an approval prompt.
             adapter.disconnect()
 
     drain_task = asyncio.create_task(forward_outbound(), name="ws_drain")
@@ -291,6 +303,8 @@ def _run_conductor_sync(adapter: WebConductorIO) -> None:
             on_say=adapter.on_say,
             on_user_input=adapter.on_user_input,
             on_status=adapter.on_status,
+            io_mode="web",
+            on_approval=adapter.wait_for_approval,
         )
     except SessionEnded:
         # Operator closed the browser tab. Clean exit; the digest is

@@ -143,6 +143,57 @@ def test_submit_with_no_pending_returns_clean_failure() -> None:
     assert "no approval pending" in result.reason
 
 
+def test_submit_via_ui_with_matching_action_id_satisfies() -> None:
+    """Web-mode happy path: a button click whose action_id matches the
+    pending approval satisfies the gate. The CODE is irrelevant — the
+    structurally-unguessable action_id + the operator's same-origin
+    button click together prove presence."""
+    gate = ApprovalGate(code_digits=3, mode="web")
+    gate.request(action_id="apply-1", description="apply change")
+    result = gate.submit_via_ui("apply-1")
+    assert result.matched is True
+    assert result.action_id == "apply-1"
+    assert gate.consume("apply-1") is True
+
+
+def test_submit_via_ui_with_wrong_action_id_cancels() -> None:
+    """A click carrying a stale or fabricated action_id must NOT
+    satisfy the gate, AND must cancel the pending approval — defense
+    in depth against a buggy client sending the wrong id."""
+    gate = ApprovalGate(code_digits=3, mode="web")
+    gate.request(action_id="apply-real", description="real")
+    result = gate.submit_via_ui("apply-stale")
+    assert result.matched is False
+    assert "did not match" in result.reason
+    # And the pending is now cancelled — even a follow-up correct-id
+    # click cannot satisfy.
+    second = gate.submit_via_ui("apply-real")
+    assert second.matched is False
+    assert "not pending" in second.reason
+
+
+def test_submit_via_ui_with_expired_approval_refuses() -> None:
+    gate = ApprovalGate(code_digits=3, mode="web", default_ttl_seconds=120)
+    pending = gate.request(action_id="apply-1", description="apply")
+    pending.expires_at = time.monotonic() - 1
+    result = gate.submit_via_ui("apply-1")
+    assert result.matched is False
+    assert "expired" in result.reason
+
+
+def test_submit_via_ui_with_no_pending_returns_clean_failure() -> None:
+    gate = ApprovalGate(code_digits=3, mode="web")
+    result = gate.submit_via_ui("anything")
+    assert result.matched is False
+    assert "no approval pending" in result.reason
+
+
+def test_gate_mode_attribute_default_and_explicit() -> None:
+    """Default mode is cli; explicit web mode is stored verbatim."""
+    assert ApprovalGate().mode == "cli"
+    assert ApprovalGate(mode="web").mode == "web"
+
+
 def test_cancel_voids_a_pending_approval() -> None:
     gate = ApprovalGate(code_digits=3)
     with patch(

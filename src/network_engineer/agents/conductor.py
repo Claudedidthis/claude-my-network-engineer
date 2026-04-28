@@ -96,6 +96,8 @@ class Conductor:
         on_say: Callable[[str], None] | None = None,
         on_user_input: Callable[[str], str] | None = None,
         on_status: Callable[[dict[str, Any]], None] | None = None,
+        io_mode: IOMode = "cli",
+        on_approval: Callable[[str], bool] | None = None,
     ) -> SessionState:
         """Run one session. Default I/O: stdout / stdin REPL.
 
@@ -137,7 +139,11 @@ class Conductor:
         # Wire pieces
         session_state = SessionState(session_id=self.session_id)
         working_memory = WorkingMemory()
-        approval_gate = ApprovalGate()
+        # Gate mode follows the I/O mode. CLI renderers get the typed-
+        # code surface; web adapters get the button-click surface. Both
+        # paths funnel through the same deterministic ApprovalGate
+        # validation logic.
+        approval_gate = ApprovalGate(mode=io_mode)
         tools = build_conductor_tools(
             durable_memory=self.durable,
             unifi_client=self.client,
@@ -163,6 +169,7 @@ class Conductor:
                 on_status=on_status,
                 max_turns=self.config.max_turns,
                 approval_gate=approval_gate,
+                on_approval=on_approval,
             )
         except KeyboardInterrupt:
             on_say("\n\n[Session interrupted; state checkpointed.]")

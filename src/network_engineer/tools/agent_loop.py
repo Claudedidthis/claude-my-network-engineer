@@ -318,6 +318,7 @@ def run_agent(
     on_status: Callable[[dict[str, Any]], None] | None = None,
     max_turns: int = 100,
     approval_gate: Any = None,
+    on_approval: Callable[[str], bool] | None = None,
 ) -> SessionState:
     """Run the agent loop until done_for_now or max_turns exhaustion.
 
@@ -417,27 +418,75 @@ def run_agent(
                     action_id=action_id,
                     description=description,
                 )
-                # Render the approval challenge directly to the operator.
-                # The CODE comes from deterministic Python (secrets.randbelow);
-                # NOT from the LLM, which means the model can't whisper the
-                # code via speak text either — it doesn't have it.
+                # Status event surfaces the action card to whichever
+                # renderer is wired (CLI or Web). Tool args go in so the
+                # operator sees what will *actually* run, even if earlier
+                # speak text claimed something different.
                 _emit_status({
                     "event": "approval_required",
                     "tool": decision.tool,
                     "action_id": action_id,
                     "description": description,
+                    "args": dict(decision.args or {}),
                     "code_digits": len(pending.code),
                     "ttl_seconds": int(pending.expires_at - pending.created_at),
                 })
-                on_say(
-                    "\n🔐 APPROVAL REQUIRED — write operation pending.\n"
-                    f"\nAction: {description}\n"
-                    f"\nType the {len(pending.code)}-digit code below to approve, "
-                    "or anything else to cancel.\n"
-                    f"Code: {pending.code}\n"
-                )
-                typed = on_user_input("[approval code] > ")
-                result = approval_gate.submit(typed)
+
+                # Two surfaces, one gate. The mode lives on the gate
+                # itself (set when the Conductor constructs it based on
+                # the renderer's mode), so this dispatch is the ONLY
+                # place the surfaces diverge.
+                gate_mode = getattr(approval_gate, "mode", "cli")
+                if gate_mode == "web":
+                    if on_approval is None:
+                        # Misconfiguration — fail closed. A web-mode gate
+                        # without an approval callback can never be
+                        # satisfied; better to refuse cleanly than silently
+                        # block forever or, worse, leak around the gate.
+                        # Cancel the just-created pending so it doesn't
+                        # linger in `pending` state until the TTL expires.
+                        approval_gate.cancel()
+                        refusal = (
+                            f"approval_denied: tool {decision.tool!r} requires "
+                            "approval but the runtime is in web mode without "
+                            "an on_approval callback. Refusing to execute."
+                        )
+                        working_memory.add_tool_observation(refusal)
+                        session_state.record_tool_call(
+                            decision.tool, decision.args,
+                            {"error": "approval_misconfigured_web"},
+                        )
+                        _emit_status({
+                            "event": "approval_misconfigured",
+                            "tool": decision.tool,
+                            "reason": "web mode missing on_approval",
+                        })
+                        continue
+                    approved = on_approval(action_id)
+                    if approved:
+                        result = approval_gate.submit_via_ui(action_id)
+                    else:
+                        approval_gate.cancel()
+                        from network_engineer.tools.approval_gate import (
+                            ApprovalResult,
+                        )
+                        result = ApprovalResult(
+                            matched=False,
+                            action_id=action_id,
+                            description=description,
+                            reason="operator rejected",
+                        )
+                else:
+                    # CLI mode — typed numeric code.
+                    on_say(
+                        "\n🔐 APPROVAL REQUIRED — write operation pending.\n"
+                        f"\nAction: {description}\n"
+                        f"\nType the {len(pending.code)}-digit code below to approve, "
+                        "or anything else to cancel.\n"
+                        f"Code: {pending.code}\n"
+                    )
+                    typed = on_user_input("[approval code] > ")
+                    result = approval_gate.submit(typed)
                 if not result.matched:
                     refusal = (
                         f"approval_denied: {result.reason}. The write was "

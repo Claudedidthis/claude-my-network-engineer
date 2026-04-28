@@ -121,6 +121,88 @@ body {
   box-shadow: 0 0 0 1px #fbbf24;
 }
 
+/* Approval panel */
+.approval-card {
+  background: #1c2128;
+  border: 1px solid #fbbf24;
+  border-radius: 0.5rem;
+  padding: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.approval-tool {
+  font-family: ui-monospace, "SF Mono", monospace;
+  font-size: 0.85rem;
+  color: #fbbf24;
+  font-weight: 600;
+}
+
+.approval-desc {
+  font-size: 0.85rem;
+  color: #d1d5db;
+  line-height: 1.4;
+}
+
+.approval-args-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #6b7280;
+  margin-top: 0.25rem;
+}
+
+.approval-args {
+  background: #0b0f14;
+  border: 1px solid #374151;
+  border-radius: 0.3rem;
+  padding: 0.5rem;
+  font-size: 0.78rem;
+  font-family: ui-monospace, "SF Mono", monospace;
+  color: #e5e7eb;
+  overflow-x: auto;
+  margin: 0;
+  max-height: 12rem;
+  white-space: pre-wrap;
+}
+
+.approval-buttons {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+
+.btn-approve, .btn-reject {
+  flex: 1;
+  padding: 0.55rem 0.85rem;
+  border: none;
+  border-radius: 0.3rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-approve { background: #16a34a; color: white; }
+.btn-approve:hover { background: #15803d; }
+.btn-approve:active { background: #166534; }
+
+.btn-reject { background: #dc2626; color: white; }
+.btn-reject:hover  { background: #b91c1c; }
+.btn-reject:active { background: #991b1b; }
+
+.btn-approve:disabled, .btn-reject:disabled {
+  background: #374151; color: #9ca3af; cursor: not-allowed;
+}
+
+.approval-hint {
+  font-size: 0.7rem;
+  color: #6b7280;
+  font-style: italic;
+  margin: 0;
+  line-height: 1.4;
+}
+
 .input-bar {
   display: flex;
   gap: 0.5rem;

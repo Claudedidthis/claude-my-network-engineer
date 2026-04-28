@@ -25,8 +25,22 @@
     </section>
 
     <aside class="approvals hidden" id="approvals" aria-live="assertive">
-      <h2>Pending action</h2>
-      <p class="placeholder">No write pending. (Stage 3 fills this panel.)</p>
+      <h2>🔐 Approval required</h2>
+      <div class="approval-card">
+        <div class="approval-tool" id="approval-tool"></div>
+        <div class="approval-desc" id="approval-desc"></div>
+        <div class="approval-args-label">Args that will run:</div>
+        <pre class="approval-args" id="approval-args"></pre>
+        <div class="approval-buttons">
+          <button type="button" id="approve-btn" class="btn-approve">APPROVE</button>
+          <button type="button" id="reject-btn" class="btn-reject">REJECT</button>
+        </div>
+        <p class="approval-hint">
+          Buttons fire structured events; the deterministic gate validates
+          the action_id before any write runs. There is no typed code in
+          web mode.
+        </p>
+      </div>
     </aside>
   </main>
 

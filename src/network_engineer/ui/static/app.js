@@ -14,10 +14,17 @@ const elements = {
   form:       document.getElementById("input-form"),
   input:      document.getElementById("user-input"),
   sendBtn:    document.getElementById("send-btn"),
+  approvals:  document.getElementById("approvals"),
+  approveBtn: document.getElementById("approve-btn"),
+  rejectBtn:  document.getElementById("reject-btn"),
+  apprTool:   document.getElementById("approval-tool"),
+  apprDesc:   document.getElementById("approval-desc"),
+  apprArgs:   document.getElementById("approval-args"),
 };
 
 let socket = null;
 let inputMode = "idle";  // "idle" | "awaiting_reply" | "interjection"
+let pendingApproval = null;  // {action_id, tool, description, args} | null
 
 function setConnState(state) {
   elements.dot.className = `dot dot-${state}`;
@@ -89,18 +96,65 @@ function handleStatus(event) {
   } else if (ev === "interjection_window_open") {
     setInputMode("interjection");
   } else if (ev === "approval_required") {
-    // Stage 3 wires the structured approval panel for this event. For
-    // Stage 2, render the action+code as a system line so the operator
-    // sees it.
-    const desc = event.description || "(no description)";
-    appendStatus(`🔐 approval required: ${desc}`);
+    showApprovalPanel({
+      action_id:   event.action_id,
+      tool:        event.tool,
+      description: event.description || "",
+      args:        event.args || {},
+    });
+    // Surface a status line in the conversation feed too — the panel
+    // is the action surface, but a feed entry preserves the timeline.
+    appendStatus(`🔐 approval requested for ${event.tool}`);
   } else if (ev === "approval_granted") {
+    hideApprovalPanel();
     appendStatus(`✓ approval granted for ${event.tool}`);
   } else if (ev === "approval_denied") {
+    hideApprovalPanel();
     appendStatus(`✗ approval denied for ${event.tool}: ${event.reason || ""}`);
+  } else if (ev === "approval_misconfigured") {
+    hideApprovalPanel();
+    appendStatus(`⚠ approval misconfigured for ${event.tool}: ${event.reason || ""}`);
   }
   // Any other event types: ignored. The server may add new ones; the UI
   // tolerating unknowns is part of the schema-drift defense.
+}
+
+function showApprovalPanel({ action_id, tool, description, args }) {
+  pendingApproval = { action_id, tool, description, args };
+  // textContent throughout — defends against XSS in any LLM-emitted text
+  // that flows through tool name / description / args.
+  elements.apprTool.textContent = tool || "(unknown tool)";
+  elements.apprDesc.textContent = description;
+  // Pretty-print args. Even a hostile JSON payload renders as text via
+  // textContent — no innerHTML, no eval.
+  elements.apprArgs.textContent = JSON.stringify(args, null, 2);
+  elements.approveBtn.disabled = false;
+  elements.rejectBtn.disabled  = false;
+  elements.approvals.classList.remove("hidden");
+}
+
+function hideApprovalPanel() {
+  pendingApproval = null;
+  elements.approvals.classList.add("hidden");
+  elements.approveBtn.disabled = true;
+  elements.rejectBtn.disabled  = true;
+}
+
+function sendApprovalDecision(action) {
+  // action ∈ {"approve", "reject"}. We capture the action_id at click
+  // time — even if the panel is racy and a new approval has just
+  // arrived, sending the OLD action_id back is benign: the gate's
+  // submit_via_ui rejects mismatched ids.
+  if (!pendingApproval) return;
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  socket.send(JSON.stringify({
+    type:      action,
+    action_id: pendingApproval.action_id,
+  }));
+  // Disable buttons immediately to prevent double-clicks; the
+  // approval_granted/denied status will hide the panel.
+  elements.approveBtn.disabled = true;
+  elements.rejectBtn.disabled  = true;
 }
 
 function handleServerMessage(msg) {
@@ -162,5 +216,12 @@ elements.form.addEventListener("submit", (e) => {
   if (text) appendBubble("user", text);
   elements.input.value = "";
 });
+
+elements.approveBtn.addEventListener("click", () => sendApprovalDecision("approve"));
+elements.rejectBtn.addEventListener("click",  () => sendApprovalDecision("reject"));
+
+// Buttons start disabled — only enabled when an approval_required event arrives.
+elements.approveBtn.disabled = true;
+elements.rejectBtn.disabled  = true;
 
 connect();

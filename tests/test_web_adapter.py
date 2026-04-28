@@ -105,3 +105,75 @@ def test_dict_without_text_field_returns_empty() -> None:
     a = WebConductorIO()
     a.inbound.put({"type": "user_input"})  # no text field
     assert a.on_user_input("> ") == ""
+
+
+# ── Stage 3: approval channel ───────────────────────────────────────────────
+
+
+def test_wait_for_approval_returns_true_on_matching_approve() -> None:
+    a = WebConductorIO()
+    a.approvals.put({"type": "approve", "action_id": "act-1"})
+    assert a.wait_for_approval("act-1") is True
+
+
+def test_wait_for_approval_returns_false_on_matching_reject() -> None:
+    a = WebConductorIO()
+    a.approvals.put({"type": "reject", "action_id": "act-1"})
+    assert a.wait_for_approval("act-1") is False
+
+
+def test_wait_for_approval_ignores_stale_action_id_and_keeps_waiting() -> None:
+    """Stale id arrives, adapter discards it; real id arrives, adapter
+    returns True. Important: the adapter does NOT submit any structured
+    answer for stale ids — the loop never sees them."""
+    a = WebConductorIO()
+    received: list[bool] = []
+
+    def _consumer() -> None:
+        received.append(a.wait_for_approval("real"))
+
+    t = threading.Thread(target=_consumer, daemon=True)
+    t.start()
+    a.approvals.put({"type": "approve", "action_id": "stale"})
+    # Brief pause so the consumer thread sees the stale message and
+    # discards it before the real one arrives.
+    import time
+    time.sleep(0.05)
+    a.approvals.put({"type": "approve", "action_id": "real"})
+    t.join(timeout=2.0)
+    assert not t.is_alive()
+    assert received == [True]
+
+
+def test_disconnect_unblocks_wait_for_approval_with_false() -> None:
+    a = WebConductorIO()
+    received: list[bool] = []
+
+    def _consumer() -> None:
+        received.append(a.wait_for_approval("act-1"))
+
+    t = threading.Thread(target=_consumer, daemon=True)
+    t.start()
+    a.disconnect()
+    t.join(timeout=2.0)
+    assert not t.is_alive()
+    assert received == [False]
+
+
+def test_wait_for_approval_ignores_non_dict_items() -> None:
+    """Defense against future bridges putting other shapes on the
+    approvals queue (shouldn't happen via the WS handler — it filters
+    by type — but it's belt-and-braces here)."""
+    a = WebConductorIO()
+    a.approvals.put("a bare string")
+    a.approvals.put({"type": "approve", "action_id": "act-1"})
+    assert a.wait_for_approval("act-1") is True
+
+
+def test_wait_for_approval_ignores_unknown_kind_keeps_waiting() -> None:
+    """An item with an unrecognized type field shouldn't match approve
+    or reject — keep waiting."""
+    a = WebConductorIO()
+    a.approvals.put({"type": "approve_maybe", "action_id": "act-1"})
+    a.approvals.put({"type": "reject", "action_id": "act-1"})
+    assert a.wait_for_approval("act-1") is False

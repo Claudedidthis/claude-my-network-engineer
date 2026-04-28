@@ -266,3 +266,152 @@ def test_ws_handler_ignores_malformed_messages() -> None:
         echo = ws.receive_json()
         assert echo["type"] == "speak"
         assert "real reply" in echo["text"]
+
+
+# ── Approval flow integration (Stage 3) ─────────────────────────────────────
+
+
+def _runner_request_approval_then_apply(adapter: WebConductorIO) -> None:
+    """Simulate a gated tool call: emit approval_required, wait for the
+    operator's button click via wait_for_approval, then act based on the
+    answer. Exercises the full approval channel end-to-end."""
+    action_id = "act-test-12345"
+    adapter.on_status({
+        "event": "approval_required",
+        "tool": "apply_change",
+        "action_id": action_id,
+        "description": "apply_change(label='demo')",
+        "args": {"label": "demo"},
+    })
+    approved = adapter.wait_for_approval(action_id)
+    if approved:
+        adapter.on_status({
+            "event": "approval_granted",
+            "tool": "apply_change",
+            "action_id": action_id,
+        })
+        adapter.on_say("Change applied.")
+    else:
+        adapter.on_status({
+            "event": "approval_denied",
+            "tool": "apply_change",
+            "reason": "operator rejected",
+        })
+        adapter.on_say("Change cancelled.")
+
+
+def test_ws_approve_button_unblocks_runner_with_true() -> None:
+    """Full happy path through the bridge: status event arrives, browser
+    sends {type:'approve', action_id}, runner sees True, applies."""
+    app = create_app(conductor_runner=_runner_request_approval_then_apply)
+    with TestClient(app).websocket_connect("/ws/conductor") as ws:
+        # Receive approval_required.
+        appr = ws.receive_json()
+        assert appr["type"] == "status"
+        assert appr["event"] == "approval_required"
+        action_id = appr["action_id"]
+        assert appr["args"] == {"label": "demo"}
+
+        # Send the approval.
+        ws.send_json({"type": "approve", "action_id": action_id})
+
+        # Collect remaining events until session_end.
+        events = [appr]
+        for _ in range(10):
+            events.append(ws.receive_json())
+            if events[-1].get("type") == "session_end":
+                break
+        granted = next(e for e in events if e.get("event") == "approval_granted")
+        speak = next(e for e in events if e.get("type") == "speak")
+        assert granted["action_id"] == action_id
+        assert "Change applied" in speak["text"]
+
+
+def test_ws_reject_button_unblocks_runner_with_false() -> None:
+    """Rejection path: browser sends {type:'reject'}, runner sees False,
+    cancels."""
+    app = create_app(conductor_runner=_runner_request_approval_then_apply)
+    with TestClient(app).websocket_connect("/ws/conductor") as ws:
+        appr = ws.receive_json()
+        action_id = appr["action_id"]
+        ws.send_json({"type": "reject", "action_id": action_id})
+
+        events = [appr]
+        for _ in range(10):
+            events.append(ws.receive_json())
+            if events[-1].get("type") == "session_end":
+                break
+        denied = next(e for e in events if e.get("event") == "approval_denied")
+        speak = next(e for e in events if e.get("type") == "speak")
+        assert denied["reason"] == "operator rejected"
+        assert "cancelled" in speak["text"]
+
+
+def test_ws_stale_action_id_is_ignored_by_adapter() -> None:
+    """A buggy/stale client sending an action_id that doesn't match the
+    pending approval must not satisfy the gate. The adapter waits for
+    a matching id; the stale message is dropped."""
+    state: dict[str, Any] = {}
+
+    def _runner(adapter: WebConductorIO) -> None:
+        adapter.on_status({
+            "event": "approval_required",
+            "tool": "apply_change",
+            "action_id": "real-id",
+            "description": "real",
+            "args": {},
+        })
+        # Should ignore the stale id and pick up the real one.
+        approved = adapter.wait_for_approval("real-id")
+        state["approved"] = approved
+        adapter.on_say(f"approved={approved}")
+
+    app = create_app(conductor_runner=_runner)
+    with TestClient(app).websocket_connect("/ws/conductor") as ws:
+        appr = ws.receive_json()
+        assert appr["action_id"] == "real-id"
+        # Send a stale approval first — must be dropped silently.
+        ws.send_json({"type": "approve", "action_id": "stale-id"})
+        # Then the real approval.
+        ws.send_json({"type": "approve", "action_id": "real-id"})
+        # Read until speak.
+        for _ in range(10):
+            evt = ws.receive_json()
+            if evt.get("type") == "speak":
+                assert "approved=True" in evt["text"]
+                break
+        else:
+            pytest.fail("never saw speak event with the real-id approval")
+
+
+def test_ws_disconnect_unblocks_a_runner_waiting_on_approval() -> None:
+    """If the operator closes the tab while the runner is blocked on
+    wait_for_approval, the runner must unblock (via _DISCONNECT) and
+    return False — the gate path is tested separately."""
+    state: dict[str, Any] = {}
+
+    def _runner(adapter: WebConductorIO) -> None:
+        adapter.on_status({
+            "event": "approval_required",
+            "tool": "apply_change",
+            "action_id": "stuck",
+            "description": "stuck",
+            "args": {},
+        })
+        try:
+            approved = adapter.wait_for_approval("stuck")
+        except Exception:
+            approved = None
+        state["approved"] = approved
+
+    app = create_app(conductor_runner=_runner)
+    with TestClient(app).websocket_connect("/ws/conductor") as ws:
+        ws.receive_json()  # approval_required
+        # Closing the WS via context exit triggers disconnect.
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and "approved" not in state:
+        time.sleep(0.05)
+    assert state.get("approved") is False, (
+        "wait_for_approval should return False on disconnect, got "
+        f"{state.get('approved')!r}"
+    )

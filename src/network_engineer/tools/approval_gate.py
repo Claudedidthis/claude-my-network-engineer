@@ -105,10 +105,25 @@ class ApprovalGate:
     Holds at most ONE pending approval at a time — requesting a new one
     while another is pending cancels the old one. This keeps the operator
     UX simple: there's always exactly one thing being approved.
+
+    Mode:
+      "cli" — operator types the numeric code at the terminal. Gate.submit()
+              compares byte-strict; this is the path the terminal `nye`
+              uses and the original threat-model design.
+      "web" — operator clicks an APPROVE button in the browser UI. The
+              click is structurally proof of presence (button is rendered
+              in a same-origin page over an authenticated WebSocket
+              session). Gate.submit_via_ui() validates the action_id; the
+              code is still generated for display/parity but never typed.
+
+    The gate's behavioral contract is identical in both modes (one strike
+    cancels, one approval consumes, action_id must match). Only the input
+    surface differs.
     """
 
     code_digits: int = _DEFAULT_CODE_DIGITS
     default_ttl_seconds: int = _DEFAULT_TTL_SECONDS
+    mode: str = "cli"  # "cli" | "web"
     _pending: PendingApproval | None = field(default=None, init=False)
     _last_consumed_action_id: str | None = field(default=None, init=False)
 
@@ -175,6 +190,48 @@ class ApprovalGate:
             action_id=pending.action_id,
             description=pending.description,
             reason="code did not match — approval cancelled",
+        )
+
+    def submit_via_ui(self, action_id: str) -> ApprovalResult:
+        """Web-mode approval path: a button click in the browser proves
+        operator presence. The action_id is the unguessable identifier
+        the gate generated at request time.
+
+        Validates the action_id matches the pending one and the approval
+        hasn't expired. On match, marks satisfied — same downstream effect
+        as the typed-code path. On mismatch, the pending approval is
+        CANCELLED (defense in depth: a buggy client sending a stale id
+        should not silently leave the gate open for a real approval).
+        """
+        pending = self._pending
+        if pending is None:
+            return ApprovalResult(matched=False, reason="no approval pending")
+        if pending.state != "pending":
+            return ApprovalResult(
+                matched=False,
+                reason=f"approval is in state {pending.state!r}, not pending",
+            )
+        if pending.is_expired():
+            pending.state = "expired"
+            return ApprovalResult(
+                matched=False,
+                action_id=pending.action_id,
+                description=pending.description,
+                reason="approval window expired",
+            )
+        if action_id != pending.action_id:
+            pending.state = "cancelled"
+            return ApprovalResult(
+                matched=False,
+                action_id=pending.action_id,
+                description=pending.description,
+                reason="action_id did not match — approval cancelled",
+            )
+        pending.state = "satisfied"
+        return ApprovalResult(
+            matched=True,
+            action_id=pending.action_id,
+            description=pending.description,
         )
 
     def consume(self, action_id: str) -> bool:

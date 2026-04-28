@@ -84,6 +84,11 @@ class WebConductorIO:
     def __init__(self) -> None:
         self.outbound: queue.Queue[Any] = queue.Queue(maxsize=self._OUTBOUND_MAXSIZE)
         self.inbound: queue.Queue[Any] = queue.Queue()
+        # Approvals travel through a separate queue from text input so a
+        # button click can never be confused with a typed message and
+        # vice versa. The WS handler sorts incoming messages by `type`:
+        # user_input → inbound, approve/reject → approvals.
+        self.approvals: queue.Queue[Any] = queue.Queue()
 
     # ── ConductorIO callbacks ───────────────────────────────────────────
 
@@ -115,11 +120,55 @@ class WebConductorIO:
         # which the loop typically treats as "no interjection."
         return ""
 
+    def wait_for_approval(self, action_id: str) -> bool:
+        """Web-mode approval surface called by the agent loop's on_approval
+        hook. Blocks the worker thread until the browser sends an
+        approve/reject message (or the WS drops).
+
+        Returns True iff the operator clicked APPROVE on a panel whose
+        action_id matches the one passed in. A reject, a stale id, or a
+        disconnect all return False — the loop then cancels the gate and
+        emits an approval_denied tool_observation.
+
+        Note: this method *only* surfaces the operator's intent. The
+        deterministic ApprovalGate is what actually validates and
+        consumes; this hook is the bridge, not the trust anchor.
+        """
+        while True:
+            item = self.approvals.get()
+            if item is _DISCONNECT:
+                return False
+            if not isinstance(item, dict):
+                # Malformed; ignore and keep waiting.
+                continue
+            kind = item.get("type")
+            sent_id = item.get("action_id")
+            if kind == "approve" and sent_id == action_id:
+                return True
+            if kind == "reject" and sent_id == action_id:
+                return False
+            # Stale / mismatched action_id from a buggy client — log and
+            # ignore. The gate's submit_via_ui would also catch this if
+            # we returned True, but defending here keeps the loop logic
+            # crisp.
+            log.warning(
+                "stale_or_mismatched_approval",
+                extra={
+                    "received_type": kind,
+                    "received_action_id": sent_id,
+                    "expected_action_id": action_id,
+                },
+            )
+
     # ── Bridge primitives used by the server's WS handler ───────────────
 
     def disconnect(self) -> None:
-        """Wake any blocking on_user_input call so the Conductor can exit."""
+        """Wake any blocking on_user_input call so the Conductor can exit.
+        Also wakes any blocking wait_for_approval — same sentinel, both
+        queues, so a single-tab close cleanly aborts whichever the
+        Conductor is parked on."""
         self.inbound.put(_DISCONNECT)
+        self.approvals.put(_DISCONNECT)
 
     def signal_session_end(self, reason: str = "") -> None:
         """Push a session_end + drain-stop sentinel after the Conductor

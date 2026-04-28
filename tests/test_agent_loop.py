@@ -675,6 +675,150 @@ def test_gated_tool_with_no_gate_configured_fails_closed() -> None:
                for c in obs_contents)
 
 
+def test_web_mode_gate_dispatches_to_on_approval_callback() -> None:
+    """Web-mode happy path: gate emits approval_required status; loop
+    calls on_approval(action_id); on_approval returns True; tool runs."""
+    from network_engineer.tools.approval_gate import ApprovalGate
+
+    gate = ApprovalGate(mode="web")
+    runs: list[dict[str, Any]] = []
+    seen_action_ids: list[str] = []
+
+    tools = {
+        "apply_change": ToolSpec(
+            name="apply_change",
+            description="Apply a config change.",
+            fn=lambda label: runs.append({"label": label}) or {"ok": True},
+            schema={"type": "object", "properties": {"label": {"type": "string"}}},
+            requires_approval=True,
+        ),
+    }
+    decisions = [
+        CallToolDecision(tool="apply_change", args={"label": "test"}),
+        DoneDecision(),
+    ]
+
+    def on_approval(action_id: str) -> bool:
+        seen_action_ids.append(action_id)
+        return True
+
+    # Capture the status events to verify the approval_required event
+    # carried action_id, args, description.
+    statuses: list[dict[str, Any]] = []
+
+    def on_status(event: dict[str, Any]) -> None:
+        statuses.append(event)
+
+    inputs: list[str] = []
+    said: list[str] = []
+    llm = ScriptedLLM(decisions)
+    durable = FakeDurableMemory()
+    session = SessionState()
+    wm = WorkingMemory()
+    run_agent(
+        system_prompt="(t)",
+        durable_memory=durable, session_state=session,
+        working_memory=wm, tools=tools, llm=llm,
+        on_say=said.append,
+        on_user_input=lambda _: inputs.pop(0) if inputs else "",
+        on_status=on_status,
+        approval_gate=gate,
+        on_approval=on_approval,
+    )
+    assert runs == [{"label": "test"}]
+    # The action_id passed to on_approval must match the one in the
+    # approval_required status event — that's how the UI ties button
+    # clicks to pending approvals.
+    appr = next(s for s in statuses if s.get("event") == "approval_required")
+    assert appr["action_id"] == seen_action_ids[0]
+    assert appr["tool"] == "apply_change"
+    assert appr["description"]
+    assert appr["args"] == {"label": "test"}
+
+
+def test_web_mode_gate_with_rejection_does_not_execute() -> None:
+    """Web-mode rejection path: on_approval returns False → gate
+    cancelled, tool refuses with approval_denied tool_observation."""
+    from network_engineer.tools.approval_gate import ApprovalGate
+
+    gate = ApprovalGate(mode="web")
+    runs: list[Any] = []
+
+    tools = {
+        "apply_change": ToolSpec(
+            name="apply_change",
+            description="Apply.",
+            fn=lambda **kw: runs.append(kw) or {"ok": True},
+            requires_approval=True,
+        ),
+    }
+    decisions = [
+        CallToolDecision(tool="apply_change", args={}),
+        SpeakDecision(text="Got it; not retrying."),
+        DoneDecision(),
+    ]
+
+    said: list[str] = []
+    llm = ScriptedLLM(decisions)
+    durable = FakeDurableMemory()
+    session = SessionState()
+    wm = WorkingMemory()
+    run_agent(
+        system_prompt="(t)",
+        durable_memory=durable, session_state=session,
+        working_memory=wm, tools=tools, llm=llm,
+        on_say=said.append,
+        on_user_input=lambda _: "",
+        approval_gate=gate,
+        on_approval=lambda _action_id: False,  # always reject
+    )
+    assert runs == []
+    # The model received a clear denial in the tool_observation.
+    second_call_wm = llm.calls[1]["working_memory"]
+    obs = [t.content for t in second_call_wm if t.role == "tool_observation"]
+    assert any("approval_denied" in c for c in obs)
+    assert any("operator rejected" in c for c in obs)
+
+
+def test_web_mode_gate_with_no_callback_fails_closed() -> None:
+    """Misconfiguration: web-mode gate without on_approval cannot be
+    satisfied; the loop must refuse rather than block forever or leak
+    around the gate."""
+    from network_engineer.tools.approval_gate import ApprovalGate
+
+    gate = ApprovalGate(mode="web")
+    runs: list[Any] = []
+    tools = {
+        "apply_change": ToolSpec(
+            name="apply_change",
+            description="Apply.",
+            fn=lambda **kw: runs.append(kw),
+            requires_approval=True,
+        ),
+    }
+    decisions = [
+        CallToolDecision(tool="apply_change", args={}),
+        DoneDecision(),
+    ]
+    llm = ScriptedLLM(decisions)
+    durable = FakeDurableMemory()
+    session = SessionState()
+    wm = WorkingMemory()
+    run_agent(
+        system_prompt="(t)",
+        durable_memory=durable, session_state=session,
+        working_memory=wm, tools=tools, llm=llm,
+        on_say=lambda _: None,
+        on_user_input=lambda _: "",
+        approval_gate=gate,
+        on_approval=None,  # the bug: web mode but no callback wired
+    )
+    assert runs == []
+    second_call_wm = llm.calls[1]["working_memory"]
+    obs = [t.content for t in second_call_wm if t.role == "tool_observation"]
+    assert any("approval_denied" in c and "web mode" in c for c in obs)
+
+
 def test_gate_enforces_one_approval_per_write() -> None:
     """A single approval must NOT cover multiple writes. The gate consumes
     on first execute; a second gated tool needs its own fresh code."""
