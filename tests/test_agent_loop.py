@@ -675,6 +675,63 @@ def test_gated_tool_with_no_gate_configured_fails_closed() -> None:
                for c in obs_contents)
 
 
+def test_skip_interjection_after_speak_when_set_true() -> None:
+    """Web mode (UI) skips the after-speak interjection block — the
+    browser has no stdin-blocking gate, the operator types whenever,
+    and the only "reply required" signal is the yellow border that
+    fires for AskDecision. Verify the loop honors the flag: with
+    skip_interjection_after_speak=True, on_user_input is NOT called
+    after a SpeakDecision, and no interjection_window_open status
+    event fires."""
+    on_user_input_calls: list[str] = []
+    statuses: list[dict[str, Any]] = []
+    decisions = [
+        SpeakDecision(text="Welcome back."),
+        SpeakDecision(text="Here's where we left off."),
+        DoneDecision(),
+    ]
+    llm = ScriptedLLM(decisions)
+    durable = FakeDurableMemory()
+    session = SessionState()
+    wm = WorkingMemory()
+    run_agent(
+        system_prompt="(t)",
+        durable_memory=durable, session_state=session,
+        working_memory=wm, tools={}, llm=llm,
+        on_say=lambda _: None,
+        on_user_input=lambda p: on_user_input_calls.append(p) or "",
+        on_status=lambda e: statuses.append(e),
+        skip_interjection_after_speak=True,
+    )
+    assert on_user_input_calls == [], (
+        "web mode must NOT call on_user_input after Speak — it is "
+        f"a CLI-stdin artifact. Calls: {on_user_input_calls!r}"
+    )
+    assert not any(s.get("event") == "interjection_window_open" for s in statuses), (
+        "interjection_window_open status must not fire when the flag is set"
+    )
+
+
+def test_default_mode_still_calls_interjection_after_speak() -> None:
+    """Backward-compat guard: the default flag value is False, so
+    existing CLI callers continue to see the interjection window."""
+    on_user_input_calls: list[str] = []
+    decisions = [SpeakDecision(text="hi"), DoneDecision()]
+    llm = ScriptedLLM(decisions)
+    durable = FakeDurableMemory()
+    session = SessionState()
+    wm = WorkingMemory()
+    run_agent(
+        system_prompt="(t)",
+        durable_memory=durable, session_state=session,
+        working_memory=wm, tools={}, llm=llm,
+        on_say=lambda _: None,
+        on_user_input=lambda p: on_user_input_calls.append(p) or "",
+        # No skip flag — default is False (CLI behavior).
+    )
+    assert on_user_input_calls == ["> "]
+
+
 def test_web_mode_gate_dispatches_to_on_approval_callback() -> None:
     """Web-mode happy path: gate emits approval_required status; loop
     calls on_approval(action_id); on_approval returns True; tool runs."""

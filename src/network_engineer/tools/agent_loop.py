@@ -319,6 +319,7 @@ def run_agent(
     max_turns: int = 100,
     approval_gate: Any = None,
     on_approval: Callable[[str], bool] | None = None,
+    skip_interjection_after_speak: bool = False,
 ) -> SessionState:
     """Run the agent loop until done_for_now or max_turns exhaustion.
 
@@ -351,16 +352,23 @@ def run_agent(
         if isinstance(decision, SpeakDecision):
             on_say(decision.text)
             working_memory.add_assistant(decision.text)
-            # After a speak, give the operator a chance to interject. Empty
-            # input (Enter) means "continue, no interjection". Non-empty
-            # input becomes a user turn the LLM sees on its next decide call.
-            _emit_status({
-                "event": "interjection_window_open",
-                "hint": "Enter to continue, or type to interject",
-            })
-            interjection = on_user_input("> ")
-            if interjection:
-                working_memory.add_user(interjection)
+            # In CLI mode we open an interjection window after every speak —
+            # stdin is blocking, the prompt re-displays per-line, and "Press
+            # Enter to continue" is the natural CLI gesture. In web mode
+            # there is no input gate: the operator types whenever they want
+            # (their input lands in the inbound queue, consumed by the next
+            # genuine on_user_input call from an ask_operator). The yellow
+            # input border in the browser then becomes the ONLY signal that
+            # input is required — no more ambiguous "is it my turn?" moments
+            # caused by speak text containing a question.
+            if not skip_interjection_after_speak:
+                _emit_status({
+                    "event": "interjection_window_open",
+                    "hint": "Enter to continue, or type to interject",
+                })
+                interjection = on_user_input("> ")
+                if interjection:
+                    working_memory.add_user(interjection)
 
         elif isinstance(decision, AskDecision):
             on_say(decision.question)

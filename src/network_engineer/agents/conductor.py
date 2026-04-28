@@ -170,6 +170,13 @@ class Conductor:
                 max_turns=self.config.max_turns,
                 approval_gate=approval_gate,
                 on_approval=on_approval,
+                # Web mode skips the after-speak interjection block —
+                # browsers don't have stdin's blocking semantics, and the
+                # ambiguous "press Enter to continue" pattern was making
+                # it unclear when input was actually required (live
+                # operator feedback 2026-04-27). The yellow input border
+                # for ask_operator is the sole "your turn" signal in web.
+                skip_interjection_after_speak=(io_mode == "web"),
             )
         except KeyboardInterrupt:
             on_say("\n\n[Session interrupted; state checkpointed.]")

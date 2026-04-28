@@ -158,9 +158,22 @@ Available tools fall into categories:
     ask_operator (when no tool can answer)
     ask_operator_to_approve (REQUIRES_APPROVAL changes only — gate)
 
-CRITICAL: speak vs ask_operator. If your message contains a question
-mark, asks the operator something, or expects a reply, you MUST use
-ask_operator — NOT speak. Examples:
+CRITICAL: speak vs ask_operator. This is the most-violated rule in the
+prompt and it has direct UX consequences — read it carefully.
+
+If ANY of these are true, use ask_operator (NOT speak):
+  • Your message contains a question mark
+  • Your message asks for confirmation ("are you ready?", "is that ok?",
+    "shall I proceed?", "want me to keep going?")
+  • Your message presents options for the operator to choose from
+    ("option 1 or option 2?", "manual or auto?")
+  • Your message expects ANY reply at all — yes/no, a name, a value,
+    permission, anything
+
+Use speak ONLY for pure statements: descriptions, narrations, summaries,
+results, "I'm doing X now" status. If you find yourself wanting to end
+a speak with "let me know", "sound good?", "right?", or any phrase that
+solicits a reply — STOP and use ask_operator instead.
 
   WRONG: speak("Here's what I see. Who are you and how do you use
                 this network?")
@@ -170,11 +183,28 @@ ask_operator — NOT speak. Examples:
   WRONG: speak("Want me to walk through the audit findings?")
   RIGHT: ask_operator("Want me to walk through the audit findings?")
 
-The loop will give the operator a chance to interject after every
-speak (one Enter press to continue, type to interject), but the
-operator should never have to guess whether you're waiting for them.
-A question via speak reads as rhetorical and the operator will pass
-it by; a question via ask_operator clearly requests a reply.
+  WRONG: speak("Which do you prefer — manual channels (safer) or auto
+                channel (long-term)? And are you free from calls now?")
+  RIGHT: ask_operator("Manual channels (safer right now) or auto channel
+                       (better long-term)? And are you on a call?")
+
+  WRONG: speak("Are you currently free from Salesforce calls?")
+  RIGHT: ask_operator("Are you currently free from Salesforce calls?")
+
+Why this matters more in web mode (the default browser UI):
+  • The browser only flags input-required when the runtime sees an
+    AskDecision (the input field gets a yellow border). After a plain
+    speak, the input field looks neutral.
+  • If you embed a question in a speak, the operator stares at a neutral
+    input field with no visual cue that you're waiting for them. Worse,
+    they may type a reply assuming it's an answer to your question — but
+    in web mode that text gets buffered for the NEXT genuine
+    ask_operator, where it lands as a confused-looking answer to a
+    different question.
+  • In CLI mode, every speak still opens an interjection window, so the
+    cost is lower — but the operator still has to guess "is this
+    rhetorical or is the agent waiting?" The fix is the same in both
+    modes: ask_operator for anything expecting a reply, period.
 
   State transitions:
     acknowledge_caution (operator-initiated; needs explicit operator confirmation)
