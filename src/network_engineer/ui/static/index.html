@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Conductor</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Conductor</h1>
+    <div class="conn-indicator">
+      <span id="conn-dot" class="dot dot-disconnected" aria-hidden="true"></span>
+      <span id="conn-label" class="conn-label">connecting…</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="convo" id="convo" aria-live="polite">
+      <p class="placeholder">
+        Stage 1 scaffold. The WebSocket connection above shows the server is
+        reachable; Stage 2 wires the Conductor through this socket so the
+        conversation lands here as message bubbles.
+      </p>
+    </section>
+
+    <aside class="approvals hidden" id="approvals" aria-live="assertive">
+      <h2>Pending action</h2>
+      <p class="placeholder">No write pending. (Stage 3 fills this panel.)</p>
+    </aside>
+  </main>
+
+  <form class="input-bar" id="input-form">
+    <input
+      type="text"
+      id="user-input"
+      placeholder="Type a message and press Enter (Stage 1: echoes back)"
+      autocomplete="off"
+      autofocus
+    >
+    <button type="submit" id="send-btn">Send</button>
+  </form>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

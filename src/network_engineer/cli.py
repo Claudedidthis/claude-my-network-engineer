@@ -328,6 +328,31 @@ def _cmd_test(args: argparse.Namespace) -> int:
         return 1
 
 
+def _cmd_serve(args: argparse.Namespace) -> int:
+    """Start the FastAPI server hosting the Conductor web UI.
+
+    Stage 1 scaffold: server boots, browser-side single-page UI loads,
+    WebSocket echoes. Stage 2 wires the Conductor through the WS so the
+    conversation lands in the browser as message bubbles.
+    """
+    try:
+        from network_engineer.ui.server import serve
+    except ImportError as exc:
+        print(
+            "nye serve requires the [server] extra:\n"
+            "  pip install '.[server]'\n"
+            f"(import failed: {exc})",
+            file=__import__("sys").stderr,
+        )
+        return 1
+    serve(
+        host=args.host,
+        port=args.port,
+        open_browser=not args.no_browser,
+    )
+    return 0
+
+
 def _cmd_chat(args: argparse.Namespace) -> int:
     """Drop into the Conductor REPL. Bare `nye` invokes this implicitly."""
     from network_engineer.agents.conductor import Conductor, ConductorConfig
@@ -463,7 +488,25 @@ def main() -> int:
     rename_p.add_argument("new_name", help="New display name")
     optimize_p.set_defaults(func=_cmd_optimize)
 
-    subparsers.add_parser("serve", help="Run the FastAPI server (Phase 10, [server] extra)")
+    serve_p = subparsers.add_parser(
+        "serve",
+        help="Run the Conductor web UI ([server] extra required)",
+    )
+    serve_p.add_argument(
+        "--host", default="127.0.0.1",
+        help="Bind address. Defaults to 127.0.0.1 (localhost-only). The "
+             "server has NO authentication — using a non-localhost host "
+             "exposes the Conductor to anyone on that network.",
+    )
+    serve_p.add_argument(
+        "--port", type=int, default=8088,
+        help="Port to bind on (default: 8088)",
+    )
+    serve_p.add_argument(
+        "--no-browser", action="store_true",
+        help="Do not auto-open a browser window",
+    )
+    serve_p.set_defaults(func=_cmd_serve)
 
     args = parser.parse_args()
     configure_logging()

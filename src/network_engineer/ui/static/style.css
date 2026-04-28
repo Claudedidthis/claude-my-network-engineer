@@ -1,0 +1,148 @@
+/* Conductor UI — Stage 1 scaffold. Vanilla CSS, no build step. */
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  background: #0f1419;
+  color: #d1d5db;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid #1f2937;
+  background: #111827;
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #e5e7eb;
+}
+
+.conn-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: #9ca3af;
+}
+
+.dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.dot-connected   { background: #34d399; box-shadow: 0 0 6px rgba(52, 211, 153, 0.6); }
+.dot-connecting  { background: #fbbf24; }
+.dot-disconnected{ background: #ef4444; }
+
+.layout {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  min-height: 0;
+}
+
+.convo {
+  padding: 1.25rem 1.5rem;
+  overflow-y: auto;
+  border-right: 1px solid #1f2937;
+}
+
+.approvals {
+  padding: 1.25rem;
+  background: #0b0f14;
+}
+
+.approvals.hidden { display: none; }
+
+.approvals h2 {
+  margin: 0 0 0.75rem 0;
+  font-size: 0.95rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #9ca3af;
+}
+
+.placeholder {
+  color: #6b7280;
+  font-size: 0.9rem;
+  font-style: italic;
+}
+
+.bubble {
+  max-width: 80%;
+  padding: 0.6rem 0.85rem;
+  border-radius: 0.6rem;
+  margin-bottom: 0.6rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-size: 0.95rem;
+}
+
+.bubble-agent { background: #1f2937; color: #e5e7eb; }
+.bubble-user  { background: #1d4ed8; color: #f9fafb; margin-left: auto; }
+.bubble-system{
+  background: transparent;
+  color: #6b7280;
+  font-size: 0.8rem;
+  font-style: italic;
+  text-align: center;
+}
+.bubble-echo  { background: #292524; color: #d6d3d1; font-family: ui-monospace, monospace; font-size: 0.8rem; }
+
+.input-bar {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.75rem 1.25rem;
+  border-top: 1px solid #1f2937;
+  background: #111827;
+}
+
+#user-input {
+  flex: 1;
+  padding: 0.6rem 0.85rem;
+  background: #0f1419;
+  color: #e5e7eb;
+  border: 1px solid #374151;
+  border-radius: 0.4rem;
+  font-size: 0.95rem;
+  font-family: inherit;
+}
+
+#user-input:focus {
+  outline: none;
+  border-color: #2563eb;
+}
+
+#send-btn {
+  padding: 0.6rem 1.1rem;
+  background: #2563eb;
+  color: white;
+  border: none;
+  border-radius: 0.4rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+#send-btn:hover  { background: #1d4ed8; }
+#send-btn:active { background: #1e40af; }
+#send-btn:disabled { background: #374151; cursor: not-allowed; }
