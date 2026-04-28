@@ -32,7 +32,8 @@ The point is not just to build a network tool. The point is to build a network t
 | Layer 0 domain-knowledge retrieval | 🚧 designed, not implemented |
 | HouseholdProfile time-series + `nye reassess` | 🚧 designed, not implemented |
 | Orchestration graph + cascade validators between every agent pair | 🚧 designed, in flight |
-| FastAPI server + APScheduler-driven autonomous runtime | ⏳ next phase |
+| Conductor web UI (`nye serve`) — browser conversation + structured approval panel | ✅ shipped |
+| APScheduler-driven autonomous runtime | ⏳ next phase |
 | iOS companion app | ⏳ deferred |
 | Cloudflare Tunnel + Mac Studio migration | ⏳ deferred |
 
@@ -52,6 +53,19 @@ nye audit              # Runs the read-only audit.
 ```
 
 Get a UniFi local API key at: **UniFi UI → Settings → Control Plane → Integrations → Create API Key**. The key works against the local controller only; it is not the cloud Site Manager API key.
+
+## Web UI (`nye serve`)
+
+A browser surface for the same Conductor — same agent, same durable memory, same approval gate, just rendered as a chat-style page with a structured approval panel for any write operation:
+
+```bash
+pip install -e ".[core,ai,server]"
+nye serve              # http://127.0.0.1:8088/ — opens browser
+```
+
+The web UI uses the same deterministic approval gate as the CLI but presents it as an APPROVE / REJECT button on a structured action card showing the *actual args the agent is about to run* — not a numeric typed code. A button click + the gate's unguessable `action_id` is the proof of presence; no string the LLM emits can substitute. The same threat model as the CLI typed-code path is preserved verbatim ([learnings entry](docs/learnings.md#2026-04-28--web-ui--ui-mode-approval-gate)).
+
+`nye serve` binds to `127.0.0.1` by default. The server has no authentication layer; do not bind it to a non-localhost address without putting auth in front of it.
 
 ## Deployment shapes
 

@@ -6,6 +6,48 @@ Each entry records what was tried, what broke, why, and what we changed. Newest 
 
 ---
 
+## 2026-04-28 — Web UI + UI-mode approval gate
+
+**Why we built it.** After the paste-runaway (entry below) the deterministic approval gate worked, but the gate's *surface* — typing a numeric code into a terminal — was still wrong for the actual job. Operators want to read what's about to be applied, see the args, and click APPROVE or REJECT on a structured card. Live trace: the operator literally said *"a skeleton real UI for the agent to run in that can also receive and interact PROGRAMATICALLY because if a change is approved it should be programmatically approved and applied."* That's the right framing — approvals are inherently a structured-event interaction, not a CLI affordance.
+
+**Architecture.** Conductor is sync (blocks on `input()`); FastAPI is async. We bridge with a worker-thread + two stdlib `queue.Queue`'s:
+
+```
+[browser] ─WS─► [async WS handler] ─inbound queue──► [worker thread / Conductor]
+[browser] ◄─WS─ [async WS handler] ◄─outbound queue─ [worker thread / Conductor]
+[browser] ─WS─► [async WS handler] ─approvals queue─► [worker thread / Conductor]
+```
+
+Three queues, not one — operator text and approve/reject button clicks travel on different channels so a button click can never be confused with a typed message. The async side uses `asyncio.to_thread(queue.get)` to wait without starving the event loop.
+
+Five stages, each with its own commit + tests + manual check:
+
+  0. **`ConductorIO` Protocol** — formalize the I/O contract (`mode`, `on_say`, `on_user_input`, `on_status`) so two adapters (CLI, Web) implement the same shape.
+  1. **FastAPI scaffold + placeholder UI** — `nye serve` lands; `/health`, `/`, `/static/*`, WS handshake.
+  2. **WebSocket bridge** — Conductor I/O round-trips through the WS; same agent code, different surface.
+  3. **Approval panel + UI-mode gate** — `ApprovalGate` gains `mode="cli"|"web"` + `submit_via_ui(action_id)`. Loop dispatches: CLI keeps typed-code; web emits structured `approval_required` status with action_id + tool + actual args, calls `on_approval(action_id)`, then `submit_via_ui` validates.
+  3.5. **Drop interjection-after-speak in web mode** — the "press Enter to continue" pattern was a CLI-stdin artifact; in browsers it caused ambiguous "is it my turn?" moments. Yellow input border on `ask_operator` is now the sole signal.
+
+**The threat model carries.** The web button click is structurally equivalent to the typed code — both depend on (a) operator presence at a same-origin surface and (b) an unguessable token (`action_id` is uuid4-ten-hex; the typed code is `secrets.randbelow`). The LLM can't see, generate, or guess either. The deterministic gate (`approval_gate.py`) is the same Python in both modes; only the input surface differs.
+
+**Bugs found by review.**
+
+- **TOCTOU race in session cap.** First version used `if not _session_sem.locked() and _session_sem._value > 0: await _session_sem.acquire()`. Two concurrent handshakes could both pass the check; one would block forever holding `accept()` open. Fix: `threading.BoundedSemaphore.acquire(blocking=False)` — race-free non-blocking try. Lesson: any "check then await acquire" pattern in async code is suspect; only atomic try-acquire is sound.
+- **Drain-task thread leak on cancellation.** If `forward_outbound`'s `to_thread(queue.get)` was cancelled before `_END_DRAIN` was pushed, the worker thread blocked on `queue.get()` forever. Fix: always push `signal_session_end()` in the cleanup path, even when the Conductor crashed; only cancel as a last resort with `contextlib.suppress`.
+- **Outbound queue unbounded.** A slow / disconnected WS would let `outbound` grow without limit. Fix: `Queue(maxsize=128)` for natural backpressure on the producer.
+
+**Live UX bugs found and fixed by prompt-only changes.**
+
+- **Chain-of-thought leaking as text bubbles.** Anthropic's API supports interleaved text + tool_use; the model put internal reasoning ("This is clearly a return visit — I know this operator…") into the text block, which our parser correctly treats as operator-facing speech. Fix: explicit prompt rule — text blocks are operator-facing, period; reasoning goes in the `rationale` field every virtual tool already has.
+- **CLI-mode language leaking into web.** Model said *"the runtime will show you a numeric approval code — type it to confirm"* in a browser session that has no code, only a button. Fix: prompt no longer describes the gate in CLI terms; tells the model to *not narrate gate mechanics at all* — emit the GATED tool_use, let the runtime present the surface.
+- **Tool substitution theater.** Operator asked to apply an RF profile change; the only gated tool wired was `acknowledge_caution` (a durable-memory state transition); the model reached for it as theater for a "change" that wasn't actually a change. Fix: prompt rule against substituting one gated tool for another; admit plainly when the right write tool isn't in the toolset.
+
+**The `mode` discriminator pattern.** The gate, the loop, and the renderer all accept a `mode: "cli" | "web"` field. Components that diverge by surface (gate code vs button, interjection-after-speak yes-vs-no) branch on the discriminator; everything else stays uniform. Adding a third surface (e.g. iOS app via the same WebSocket protocol) would mean adding a third value, not rewriting the components.
+
+**Lesson.** When the surface changes (CLI → Web), what doesn't change is the trust model — the deterministic gate, the action_id, the validation logic. What does change is how the *challenge* is presented. Pin the trust to deterministic Python; let the surface vary. Don't write the trust in the surface code (browser button handlers, terminal input parsers); the surface is allowed to be UX-only.
+
+---
+
 ## 2026-04-27 — Paste-fed runaway and the deterministic approval gate
 
 **The runaway.** Operator pasted a multi-line block of prior-session output into the running CLI. Python's `input()` reads one line at a time, so every newline in the paste arrived as a separate "operator turn." The Conductor's tight `speak → input → speak → input` loop became a self-feeding pipeline: it consumed paste fragments like `"Encryption** |"` and `"WPA2-Personal"` as discrete operator messages, generated helpful agent prompts in response (*"Got it — more rows?"*), which consumed more paste, etc. Eventually the model emitted *"That reads as your approval. Locking it in now."* in response to garbled fragments.
