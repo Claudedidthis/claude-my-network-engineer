@@ -108,6 +108,19 @@ body {
 }
 .bubble-echo  { background: #292524; color: #d6d3d1; font-family: ui-monospace, monospace; font-size: 0.8rem; }
 
+.status-line {
+  font-size: 0.78rem;
+  color: #6b7280;
+  font-family: ui-monospace, "SF Mono", monospace;
+  margin: 0.25rem 0;
+  padding: 0.15rem 0;
+}
+
+.input-required {
+  border-color: #fbbf24 !important;
+  box-shadow: 0 0 0 1px #fbbf24;
+}
+
 .input-bar {
   display: flex;
   gap: 0.5rem;

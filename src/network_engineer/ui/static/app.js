@@ -1,6 +1,5 @@
-// Conductor UI — Stage 1 scaffold.
-// Opens a WebSocket to /ws/conductor, renders messages, sends user input.
-// Stage 2 will replace the simple echo behavior with real Conductor events.
+// Conductor UI — Stage 2: real Conductor events over WebSocket.
+// Stage 3 will add the structured approval panel for write operations.
 "use strict";
 
 const WS_URL = (() => {
@@ -18,17 +17,32 @@ const elements = {
 };
 
 let socket = null;
+let inputMode = "idle";  // "idle" | "awaiting_reply" | "interjection"
 
 function setConnState(state) {
-  // state ∈ {"connecting", "connected", "disconnected"}
   elements.dot.className = `dot dot-${state}`;
   elements.label.textContent = {
     connecting:   "connecting…",
     connected:    "connected",
-    disconnected: "disconnected — refresh to retry",
+    disconnected: "disconnected — refresh to reconnect",
   }[state] || state;
-  elements.sendBtn.disabled = state !== "connected";
-  elements.input.disabled   = state !== "connected";
+  const enabled = state === "connected";
+  elements.sendBtn.disabled = !enabled;
+  elements.input.disabled   = !enabled;
+}
+
+function setInputMode(mode) {
+  inputMode = mode;
+  if (mode === "awaiting_reply") {
+    elements.input.placeholder = "Reply required — type and press Enter";
+    elements.input.classList.add("input-required");
+  } else if (mode === "interjection") {
+    elements.input.placeholder = "Press Enter to continue, or type to interject";
+    elements.input.classList.remove("input-required");
+  } else {
+    elements.input.placeholder = "Type a message and press Enter";
+    elements.input.classList.remove("input-required");
+  }
 }
 
 function appendBubble(kind, text) {
@@ -38,24 +52,80 @@ function appendBubble(kind, text) {
 
   const bubble = document.createElement("div");
   bubble.className = `bubble bubble-${kind}`;
+  // textContent (NOT innerHTML) — defends against XSS in any LLM-emitted text.
   bubble.textContent = text;
   elements.convo.appendChild(bubble);
   elements.convo.scrollTop = elements.convo.scrollHeight;
 }
 
+function appendStatus(text) {
+  // Smaller dimmer line for tool start/done, etc.
+  const placeholder = elements.convo.querySelector(".placeholder");
+  if (placeholder) placeholder.remove();
+
+  const line = document.createElement("div");
+  line.className = "status-line";
+  line.textContent = text;
+  elements.convo.appendChild(line);
+  elements.convo.scrollTop = elements.convo.scrollHeight;
+}
+
+function handleStatus(event) {
+  // Render a curated subset; the rest are silently received.
+  const ev = event.event;
+  if (ev === "tool_starting") {
+    appendStatus(`→ running ${event.tool}…`);
+  } else if (ev === "tool_done") {
+    const dur = event.duration_s ?? 0;
+    if (event.had_error) {
+      appendStatus(`→ ${event.tool} failed in ${dur}s (${event.error_type || "error"})`);
+    } else {
+      appendStatus(`→ ${event.tool} done in ${dur}s`);
+    }
+  } else if (ev === "tool_unknown") {
+    appendStatus(`→ unknown tool requested: ${event.tool}`);
+  } else if (ev === "awaiting_reply") {
+    setInputMode("awaiting_reply");
+  } else if (ev === "interjection_window_open") {
+    setInputMode("interjection");
+  } else if (ev === "approval_required") {
+    // Stage 3 wires the structured approval panel for this event. For
+    // Stage 2, render the action+code as a system line so the operator
+    // sees it.
+    const desc = event.description || "(no description)";
+    appendStatus(`🔐 approval required: ${desc}`);
+  } else if (ev === "approval_granted") {
+    appendStatus(`✓ approval granted for ${event.tool}`);
+  } else if (ev === "approval_denied") {
+    appendStatus(`✗ approval denied for ${event.tool}: ${event.reason || ""}`);
+  }
+  // Any other event types: ignored. The server may add new ones; the UI
+  // tolerating unknowns is part of the schema-drift defense.
+}
+
 function handleServerMessage(msg) {
-  // Stage 1: server emits {type: "hello"} on connect, {type: "echo"} per send.
-  // Stage 2 will add speak / ask / status / approval_required / session_end.
   switch (msg.type) {
-    case "hello":
-      appendBubble("system", msg.message || "connected");
+    case "speak":
+      appendBubble("agent", msg.text || "");
+      // After the speak, default to interjection mode unless a status
+      // event later flips it to awaiting_reply.
+      setInputMode("interjection");
       break;
-    case "echo":
-      appendBubble("echo", `echo ← ${JSON.stringify(msg.received)}`);
+    case "status":
+      handleStatus(msg);
+      break;
+    case "session_end":
+      appendStatus(`session ended${msg.reason ? `: ${msg.reason}` : ""}`);
+      setInputMode("idle");
+      elements.input.disabled = true;
+      elements.sendBtn.disabled = true;
+      break;
+    case "error":
+      appendStatus(`error: ${msg.reason || "(unknown)"}`);
       break;
     default:
-      // Render unknown types verbatim — useful as a debug fallback.
-      appendBubble("system", `[${msg.type}] ${JSON.stringify(msg)}`);
+      // Unknown shape — render verbatim for debugging.
+      appendStatus(`[${msg.type || "?"}] ${JSON.stringify(msg)}`);
   }
 }
 
@@ -63,14 +133,14 @@ function connect() {
   setConnState("connecting");
   socket = new WebSocket(WS_URL);
 
-  socket.addEventListener("open", () => setConnState("connected"));
+  socket.addEventListener("open",  () => setConnState("connected"));
 
   socket.addEventListener("message", (evt) => {
     let parsed;
     try {
       parsed = JSON.parse(evt.data);
     } catch (err) {
-      appendBubble("system", `(non-JSON server message: ${evt.data})`);
+      appendStatus(`(non-JSON server message: ${evt.data})`);
       return;
     }
     handleServerMessage(parsed);
@@ -83,9 +153,13 @@ function connect() {
 elements.form.addEventListener("submit", (e) => {
   e.preventDefault();
   const text = elements.input.value;
-  if (!text || !socket || socket.readyState !== WebSocket.OPEN) return;
+  // In interjection mode an empty string is a valid signal ("just continue"),
+  // BUT we don't render an empty bubble. In awaiting_reply mode, the
+  // server-side loop will refuse empty replies, so we let the operator
+  // type something. We send whatever's there and clear the box.
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
   socket.send(JSON.stringify({ type: "user_input", text }));
-  appendBubble("user", text);
+  if (text) appendBubble("user", text);
   elements.input.value = "";
 });
 
